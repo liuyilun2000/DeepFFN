@@ -689,13 +689,13 @@ class DeepFFNLlamaDecoderLayer(nn.Module):
             **kwargs,
         )
         hidden_states = residual + hidden_states
-
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
         
         ### DeepFFN ###
         for mlp_layer in self.mlp:
+            # Fully Connected
+            residual = hidden_states
+            hidden_states = self.post_attention_layernorm(hidden_states)
+            
             hidden_states = self.mlp_layer(hidden_states)
             hidden_states = residual + hidden_states
 
