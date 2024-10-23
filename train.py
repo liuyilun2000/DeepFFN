@@ -47,11 +47,19 @@ AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 
 
 
-config = DeepFFNLlamaConfig(
+
+
+base_model = "meta-llama/Llama-3.2-3B"
+tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+
+
+config = DeepFFNLlamaConfig.from_pretrained(
+    base_model,
     hidden_size=768,
     intermediate_size=4*768,
     num_hidden_layers=12,
     num_attention_heads=12,
+    num_key_value_heads=12,
     num_mlp_layers=4
 )
 model = DeepFFNLlamaForCausalLM(
@@ -60,15 +68,26 @@ model = DeepFFNLlamaForCausalLM(
 
 
 
+prompt = "Hey, are you conscious? Can you talk to me?"
+inputs = tokenizer(prompt, return_tensors="pt")
 
-#tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+# Generate
+generate_ids = model.generate(inputs.input_ids, max_length=5)
+tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+"Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+
+
+
+
+
+'''
 model = DeepFFNLlamaForCausalLM.from_pretrained(
     "DeepFFNLLaMA",
     config=config,
     torch_dtype=torch.bfloat16,
     device_map='auto'#{"": int(os.environ.get("LOCAL_RANK") or 0)},
 )
-
+'''
 '''
 end for deepffnllama
 '''

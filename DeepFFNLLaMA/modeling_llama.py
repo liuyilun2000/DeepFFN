@@ -695,8 +695,8 @@ class DeepFFNLlamaDecoderLayer(nn.Module):
             # Fully Connected
             residual = hidden_states
             hidden_states = self.post_attention_layernorm(hidden_states)
-            
-            hidden_states = self.mlp_layer(hidden_states)
+
+            hidden_states = mlp_layer(hidden_states)
             hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
