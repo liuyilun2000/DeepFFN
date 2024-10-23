@@ -139,7 +139,7 @@ class DeepFFNLlamaConfig(PretrainedConfig):
     >>> configuration = model.config
     ```"""
 
-    model_type = "llama"
+    model_type = "deepffn-llama"
     keys_to_ignore_at_inference = ["past_key_values"]
 
     def __init__(
@@ -186,7 +186,7 @@ class DeepFFNLlamaConfig(PretrainedConfig):
 
         ### DeepFFN ###
         self.num_mlp_layers = num_mlp_layers
-        
+
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps

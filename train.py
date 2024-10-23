@@ -34,26 +34,45 @@ from transformers import (
     AutoTokenizer,
 )
 
-from DeepFFNLlama.configuration_llama import DeepFFNLlamaConfig
-from DeepFFNLlama.modeling_mixtral import (
+from DeepFFNLLaMA.configuration_llama import DeepFFNLlamaConfig
+from DeepFFNLLaMA.modeling_llama import (
     DeepFFNLlamaModel,
     DeepFFNLlamaForCausalLM,
 )
 
-AutoConfig.register("mixtral-adapter", MixtralAdapterConfig)
-AutoModel.register(MixtralAdapterConfig, MixtralAdapterModel)
-AutoModelForCausalLM.register(MixtralAdapterConfig, MixtralAdapterForCausalLM)
+AutoConfig.register("deepffn-llama", DeepFFNLlamaConfig)
+AutoModel.register(DeepFFNLlamaConfig, DeepFFNLlamaModel)
+AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 
 
-from olmoe_modification.configuration_olmoe import OlmoeAdapterConfig
-from olmoe_modification.modeling_olmoe import (
-    OlmoeAdapterForCausalLM,
-    OlmoeAdapterModel,
+
+
+config = DeepFFNLlamaConfig(
+    hidden_size=768,
+    intermediate_size=4*768,
+    num_hidden_layers=12,
+    num_attention_heads=12,
+    num_mlp_layers=4
+)
+model = DeepFFNLlamaForCausalLM(
+    config
 )
 
-AutoConfig.register("olmoe-adapter", OlmoeAdapterConfig)
-AutoModel.register(OlmoeAdapterConfig, OlmoeAdapterModel)
-AutoModelForCausalLM.register(OlmoeAdapterConfig, OlmoeAdapterForCausalLM)
+
+
+
+#tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+model = DeepFFNLlamaForCausalLM.from_pretrained(
+    "DeepFFNLLaMA",
+    config=config,
+    torch_dtype=torch.bfloat16,
+    device_map='auto'#{"": int(os.environ.get("LOCAL_RANK") or 0)},
+)
+
+'''
+end for deepffnllama
+'''
+
 
 
 from utils import (
