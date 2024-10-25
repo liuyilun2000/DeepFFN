@@ -37,7 +37,7 @@ from transformers import (
 from DeepFFNLLaMA.configuration_llama import DeepFFNLlamaConfig
 from DeepFFNLLaMA.modeling_llama import (
     DeepFFNLlamaModel,
-    DeepFFNLlamaForCausalLM,
+    DeepFFNLlamaForCausalLM
 )
 
 AutoConfig.register("deepffn-llama", DeepFFNLlamaConfig)
