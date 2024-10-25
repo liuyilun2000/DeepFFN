@@ -1,3 +1,5 @@
+HF_TOKEN = "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"
+
 
 import argparse
 import copy
@@ -50,8 +52,12 @@ from utils import *
 
 
 
-base_model = "meta-llama/Llama-3.2-3B"
-tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+base_model = "meta-llama/Llama-2-7B-hf"
+tokenizer = AutoTokenizer.from_pretrained(
+    base_model, 
+    trust_remote_code=True,
+    token=HF_TOKEN
+)
 
 
 config = DeepFFNLlamaConfig.from_pretrained(
@@ -61,13 +67,21 @@ config = DeepFFNLlamaConfig.from_pretrained(
     num_hidden_layers=12,
     num_attention_heads=12,
     num_key_value_heads=12,
-    num_mlp_layers=4
+    num_mlp_layers=1,
+    token=HF_TOKEN
 )
 model = AutoModelForCausalLM.from_config(
     config
 )
 print(model)
 
+convert_trainable_parameters(model)
+print_trainable_parameters(model)
+
+
+convert_trainable_parameters(model, 
+    frozen_param_names=['embed_tokens', 'lm_head'])
+print_trainable_parameters(model)
 
 
 

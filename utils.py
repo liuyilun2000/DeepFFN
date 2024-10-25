@@ -2,7 +2,11 @@ import math
 import torch
 from torch.nn import Sequential
 
-def convert_trainable_parameters(model, trainable_param_names=None):
+def convert_trainable_parameters(
+        model, 
+        trainable_param_names=None,
+        frozen_param_names=None,
+    ):
     trainable_params = 0
     all_param = 0
     for name, param in model.named_parameters():
@@ -10,12 +14,17 @@ def convert_trainable_parameters(model, trainable_param_names=None):
         if trainable_param_names is None:
             param.requires_grad = True
             trainable_params += 1
+        elif any(substring in name for substring in trainable_param_names):
+            param.requires_grad = True
+            trainable_params += 1
         else:
-            if any(substring in name for substring in trainable_param_names):
-                param.requires_grad = True
-                trainable_params += 1
-            else:
+            param.requires_grad = False
+        if frozen_param_names is None:
+            continue
+        elif any(substring in name for substring in frozen_param_names):
+            if param.requires_grad:
                 param.requires_grad = False
+                trainable_params -= 1
     print(
         f"Convert trainable params COUNT: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param:.2f}"
     )
