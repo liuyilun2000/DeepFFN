@@ -693,10 +693,10 @@ class DeepFFNLlamaDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
         
         ### DeepFFN ###
-        for mlp_layer, mlp_layernorm in zip(self.mlp, self.mlp_layernorm):
+        for mlp_layer, mlp_layernorm_layer in zip(self.mlp, self.mlp_layernorm):
             # Fully Connected
             residual = hidden_states
-            hidden_states = mlp_layernorm(hidden_states)
+            hidden_states = mlp_layernorm_layer(hidden_states)
             hidden_states = mlp_layer(hidden_states)
             hidden_states = residual + hidden_states
 
