@@ -636,7 +636,9 @@ class DeepFFNLlamaDecoderLayer(nn.Module):
         )
         
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp_layernorm = nn.ModuleList(
+            [LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps) for mlp_layer_idx in range(config.num_mlp_layers)]
+        )
 
     def forward(
         self,
@@ -691,11 +693,10 @@ class DeepFFNLlamaDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
         
         ### DeepFFN ###
-        for mlp_layer in self.mlp:
+        for mlp_layer, mlp_layernorm in zip(self.mlp, self.mlp_layernorm):
             # Fully Connected
             residual = hidden_states
-            hidden_states = self.post_attention_layernorm(hidden_states)
-
+            hidden_states = mlp_layernorm(hidden_states)
             hidden_states = mlp_layer(hidden_states)
             hidden_states = residual + hidden_states
 
