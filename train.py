@@ -44,6 +44,7 @@ AutoConfig.register("deepffn-llama", DeepFFNLlamaConfig)
 AutoModel.register(DeepFFNLlamaConfig, DeepFFNLlamaModel)
 AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 
+from utils import *
 
 
 
