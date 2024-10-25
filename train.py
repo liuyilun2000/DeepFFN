@@ -49,355 +49,203 @@ AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 from utils import *
 
 
+def create_splits(dataset_name: str, dataset_config: str, cache_dir: str, val_size: int = 10000):
+    """Create training and validation splits from streaming dataset."""
+    print(f"Loading dataset {dataset_name}...")
+    full_dataset = load_dataset(
+        dataset_name,
+        name=dataset_config,
+        split="train",
+        streaming=True,
+        cache_dir=cache_dir
+    )
+    
+    # Count examples in a sample
+    sample_count = count_examples_in_stream(full_dataset)
+    print(f"Dataset sampling complete. Found {sample_count} examples in sample.")
+    
+    val_dataset = full_dataset.take(val_size)
+    train_dataset = full_dataset.skip(val_size)
+    
+    return train_dataset, val_dataset, sample_count
+
+
+def count_examples_in_stream(dataset, sample_size=1000):
+    """
+    Estimate total examples in a streaming dataset by sampling.
+    Returns both a sample count and estimated total.
+    """
+    print("Sampling dataset to estimate size...")
+    # Take a small sample and count time
+    sample = dataset.take(sample_size)
+    sample_count = 0
+    for _ in tqdm(sample, total=sample_size):
+        sample_count += 1
+    
+    print(f"Found {sample_count} examples in sample")
+    return sample_count
 
 
 
-base_model = "meta-llama/Llama-2-7B-hf"
-tokenizer = AutoTokenizer.from_pretrained(
-    base_model, 
-    trust_remote_code=True,
-    token=HF_TOKEN
-)
+def preprocess_function(examples, tokenizer, max_length: int = 1024):
+    """Tokenize and prepare the examples."""
+    outputs = tokenizer(
+        examples['text'],
+        truncation=True,
+        max_length=max_length,
+        padding=True,
+        return_tensors=None
+    )
+    
+    return {
+        'input_ids': outputs['input_ids'],
+        'attention_mask': outputs['attention_mask'],
+        'labels': outputs['input_ids'].copy(),
+    }
 
 
-config = DeepFFNLlamaConfig.from_pretrained(
-    base_model,
-    hidden_size=768,
-    intermediate_size=4*768,
-    num_hidden_layers=12,
-    num_attention_heads=12,
-    num_key_value_heads=12,
-    num_mlp_layers=1,
-    token=HF_TOKEN
-)
-model = AutoModelForCausalLM.from_config(
-    config
-)
-print(model)
+def custom_data_collator(features):
+    """Collate examples into batches."""
+    return {
+        'input_ids': torch.stack([torch.tensor(f['input_ids']) for f in features]),
+        'attention_mask': torch.stack([torch.tensor(f['attention_mask']) for f in features]),
+        'labels': torch.stack([torch.tensor(f['labels']) for f in features])
+    }
 
-convert_trainable_parameters(model)
-print_trainable_parameters(model)
-
-
-convert_trainable_parameters(model, 
-    frozen_param_names=['embed_tokens', 'lm_head'])
-print_trainable_parameters(model)
-
-
-
-prompt = "Hey, are you conscious? Can you talk to me?"
-inputs = tokenizer(prompt, return_tensors="pt")
-
-# Generate
-generate_ids = model.generate(inputs.input_ids, max_new_tokens=5)
-## this has bug
-
-generate_ids = model(**inputs)
-tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-
-
-
-
-
-'''
-model = DeepFFNLlamaForCausalLM.from_pretrained(
-    "DeepFFNLLaMA",
-    config=config,
-    torch_dtype=torch.bfloat16,
-    device_map='auto'#{"": int(os.environ.get("LOCAL_RANK") or 0)},
-)
-'''
-'''
-end for deepffnllama
-'''
-
-
-
-from utils import (
-    get_adapter_args,
-    init_trainable_parameters,
-    convert_trainable_parameters,
-    print_trainable_parameters,
-)
+def compute_metrics(eval_preds):
+    """Compute perplexity and other metrics."""
+    logits, labels = eval_preds
+    loss = torch.nn.functional.cross_entropy(
+        torch.tensor(logits).view(-1, logits.shape[-1]), 
+        torch.tensor(labels).view(-1)
+    )
+    perplexity = torch.exp(loss)
+    
+    return {
+        "perplexity": perplexity.item()
+    }
 
 
 def train(
-        # model/data params
-        base_model: str = "",  # the only required argument
-        data_path: str = "test",
-        output_dir: str = "./test",
-        # load_8bit : bool = False,
-        # training hyperparams
-        batch_size: int = 128,
-        micro_batch_size: int = 4,
-        num_epochs: int = 3,
-        learning_rate: float = 3e-4,
-        weight_decay: float = 0.0,
-        cutoff_len: int = 256,
-        val_set_size: int = 2000,
-        use_gradient_checkpointing: bool = False,
-        eval_step: int = 200,
-        save_step: int = 200,
-        # PERFUME hyperparams
-        shared_adapter: bool = False,
-        shared_adapter_num: int = 0,
-        shared_routing_adapter: bool = False,
-        shared_routing_adapter_num_experts: int = 0,
-        shared_routing_adapter_num_experts_per_tok: int = 0,
-        embedded_routing_adapter: bool = False,
-        # PERFUME adapter hyperparams
-        adapter_type: str = "",
-        lora_r: int = 16,
-        lora_alpha: int = 32,
-        hidden_dim: int = 16,
-        dropout: float = 0.05,
-        # llm hyperparams
-        train_on_inputs: bool = True,  # if False, masks out inputs in loss
-        group_by_length: bool = False,  # faster, but produces an odd training loss curve
-        # wandb params
-        wandb_project: str = "",
-        wandb_run_name: str = "",
-        wandb_watch: str = "",  # options: false | gradients | all
-        wandb_log_model: str = "",  # options: false | true
-        resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
+    # Model/data params
+    model_dir: str,
+    dataset_name: str = "Zyphra/Zyda-2",
+    dataset_config: str = "zyda_crossdeduped-filtered",
+    output_dir: str = "./output",
+    # Training hyperparams
+    batch_size: int = 16,
+    micro_batch_size: int = 16,
+    num_epochs: int = 1,
+    learning_rate: float = 1e-4,
+    weight_decay: float = 1e-4,
+    warmup_steps: int = 100,
+    val_set_size: int = 10000,
+    use_gradient_checkpointing: bool = False,
+    eval_step: int = 200,
+    save_step: int = 200,
+    max_length: int = 4096,
+    # Wandb params
+    wandb_project: str = "deepffn",
+    wandb_run_name: str = "test",
+    # Additional params
+    seed: int = 42,
+    bf16: bool = True,
+    num_workers: int = 4,
 ):
-    print(
-        f"Finetuning model with params:\n"
-        f"base_model: {base_model}\n"
-        f"data_path: {data_path}\n"
-        f"output_dir: {output_dir}\n"
-        f"batch_size: {batch_size}\n"
-        f"micro_batch_size: {micro_batch_size}\n"
-        f"num_epochs: {num_epochs}\n"
-        f"learning_rate: {learning_rate}\n"
-        f"cutoff_len: {cutoff_len}\n"
-        f"val_set_size: {val_set_size}\n"
-        f"use_gradient_checkpointing: {use_gradient_checkpointing}\n"
-        f"shared_adapter: {shared_adapter}\n"
-        f"shared_adapter_num: {shared_adapter_num}\n"
-        f"shared_routing_adapter: {shared_routing_adapter}\n"
-        f"shared_routing_adapter_num_experts: {shared_routing_adapter_num_experts}\n"
-        f"shared_routing_adapter_num_experts_per_tok: {shared_routing_adapter_num_experts_per_tok}\n"
-        f"embedded_routing_adapter: {embedded_routing_adapter}\n"
-        f"adapter_type: {adapter_type}\n"
-        f"lora_r: {lora_r}\n"
-        f"lora_alpha: {lora_alpha}\n"
-        f"hidden_dim: {hidden_dim}\n"
-        f"dropout: {dropout}\n"
-        f"train_on_inputs: {train_on_inputs}\n"
-        f"group_by_length: {group_by_length}\n"
-        f"wandb_project: {wandb_project}\n"
-        f"wandb_run_name: {wandb_run_name}\n"
-        f"wandb_watch: {wandb_watch}\n"
-        f"wandb_log_model: {wandb_log_model}\n"
-        f"resume_from_checkpoint: {resume_from_checkpoint}\n"
+    # Load model and tokenizer
+    config = DeepFFNLlamaConfig.from_pretrained(model_dir)
+    model = DeepFFNLlamaForCausalLM.from_pretrained(
+        model_dir,
+        config=config,
+        torch_dtype=torch.bfloat16 if bf16 else torch.float32,
+        device_map='auto'
     )
-    assert (
-        base_model
-    ), "Please specify a --base_model, e.g. --base_model='mistralai/Mixtral-8x7B-Instruct-v0.1'"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    print(f"### Model successfully loaded at {model_dir} ###")
+
+    # Prepare dataset
+    cache_dir = f"./dataset/{dataset_config}"
+    train_dataset, val_dataset, sample_count = create_splits(dataset_name, dataset_config, cache_dir, val_set_size)
+    
     gradient_accumulation_steps = batch_size // micro_batch_size
+    examples_per_step = micro_batch_size * gradient_accumulation_steps
     
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    ddp = world_size != 1
-    if ddp:
-        device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
-        gradient_accumulation_steps = gradient_accumulation_steps // world_size
+    print("\n=== Dataset and Training Steps Information ===")
+    print(f"Sample size checked: {sample_count}")
+    print(f"Micro batch size: {micro_batch_size}")
+    print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+    print(f"Examples processed per step: {examples_per_step}")
+    print(f"Validation set size: {val_set_size}")
+    
+    # For streaming datasets, we still need to specify max_steps
+    # But now we have better information about the actual dataset size
+    total_examples = sample_count  # Use actual count instead of estimate
+    max_steps = (total_examples * num_epochs) // examples_per_step
+    
+    print(f"Estimated total steps: {max_steps:,} (based on sample count)")
+    print("==========================================\n")
 
-    # Check if parameter passed or if set within environ
-    use_wandb = len(wandb_project) > 0 or (
-            "WANDB_PROJECT" in os.environ and len(os.environ["WANDB_PROJECT"]) > 0
+
+    # Preprocess datasets
+    train_dataset = train_dataset.map(
+        lambda x: preprocess_function(x, tokenizer, max_length),
+        batched=True,
+        remove_columns=train_dataset.column_names
     )
-    # Only overwrite environ if wandb param passed
-    if len(wandb_project) > 0:
-        os.environ["WANDB_PROJECT"] = wandb_project
-    if len(wandb_watch) > 0:
-        os.environ["WANDB_WATCH"] = wandb_watch
-    if len(wandb_log_model) > 0:
-        os.environ["WANDB_LOG_MODEL"] = wandb_log_model
 
-    
-    adapter_args = get_adapter_args(adapter_type, lora_r, lora_alpha, hidden_dim, dropout)
-    
-    if 'Mixtral' in base_model:
-        config = MixtralAdapterConfig(
-            shared_adapter=shared_adapter,
-            shared_adapter_num=shared_adapter_num,
-            shared_routing_adapter=shared_routing_adapter,
-            shared_routing_adapter_num_experts=shared_routing_adapter_num_experts,
-            shared_routing_adapter_num_experts_per_tok=shared_routing_adapter_num_experts_per_tok,
-            embedded_routing_adapter=embedded_routing_adapter,
-            adapter_type=adapter_type,
-            adapter_args=adapter_args,
-            output_router_logits=True
-        )
-        print(config)
-        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
-        model = MixtralAdapterForCausalLM.from_pretrained(
-            base_model,
-            config=config,
-            torch_dtype=torch.bfloat16,
-            device_map='auto'#{"": int(os.environ.get("LOCAL_RANK") or 0)},
-        )
-    elif 'OLMoE' in base_model:
-        config = OlmoeAdapterConfig(
-            intermediate_size=1024,
-            shared_adapter=shared_adapter,
-            shared_adapter_num=shared_adapter_num,
-            shared_routing_adapter=shared_routing_adapter,
-            shared_routing_adapter_num_experts=shared_routing_adapter_num_experts,
-            shared_routing_adapter_num_experts_per_tok=shared_routing_adapter_num_experts_per_tok,
-            embedded_routing_adapter=embedded_routing_adapter,
-            adapter_type=adapter_type,
-            adapter_args=adapter_args,
-            output_router_logits=True
-        )
-        print(config)
-        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
-        model = OlmoeAdapterForCausalLM.from_pretrained(
-            base_model,
-            config=config,
-            torch_dtype=torch.bfloat16,
-            device_map='auto'#{"": int(os.environ.get("LOCAL_RANK") or 0)},
-        )
-    
-    tokenizer.pad_token_id = (
-        0  # unk. we want this to be different from the eos token
+    val_dataset = val_dataset.map(
+        lambda x: preprocess_function(x, tokenizer, max_length),
+        batched=True,
+        remove_columns=val_dataset.column_names
     )
-    tokenizer.padding_side = "left"  # Allow batched inference
-
-    def tokenize(prompt, add_eos_token=True):
-        # there's probably a way to do this with the tokenizer settings
-        # but again, gotta move fast
-        result = tokenizer(
-            prompt,
-            truncation=True,
-            max_length=cutoff_len,
-            padding=False,
-            return_tensors=None,
-        )
-        if (
-                result["input_ids"][-1] != tokenizer.eos_token_id
-                and len(result["input_ids"]) < cutoff_len
-                and add_eos_token
-        ):
-            result["input_ids"].append(tokenizer.eos_token_id)
-            if "chatglm" not in base_model:
-                result["attention_mask"].append(1)
-
-        result["labels"] = result["input_ids"].copy()
-
-        if "chatglm" in base_model:
-            return {"input_ids": result["input_ids"], "labels": result["labels"]}
-        else:
-            return result
-
-    def generate_and_tokenize_prompt(data_point):
-        full_prompt = generate_prompt(data_point)
-        tokenized_full_prompt = tokenize(full_prompt)
-        if not train_on_inputs:
-            user_prompt = generate_prompt({**data_point, "output": ""})
-            tokenized_user_prompt = tokenize(user_prompt, add_eos_token=False)
-            user_prompt_len = len(tokenized_user_prompt["input_ids"])
-
-            tokenized_full_prompt["labels"] = [
-                                                  -100
-                                              ] * user_prompt_len + tokenized_full_prompt["labels"][
-                                                                    user_prompt_len:
-                                                                    ]  # could be sped up, probably
-        return tokenized_full_prompt
-
-    print(model)
-
-    if data_path.endswith(".json"):  # todo: support jsonl
-        data = load_dataset("json", data_files=data_path)
-    else:
-        data = load_dataset(data_path)
     
-    if resume_from_checkpoint:
-        print(f"##### Loading checkpoint from {resume_from_checkpoint} #####")
-        # Check the available weights and load them
-        checkpoint_name = os.path.join(
-            resume_from_checkpoint, "model.safetensors"
-        )  # Full checkpoint
-        # The two files above have a different name depending on how they were saved, but are actually the same.
-        if os.path.exists(checkpoint_name):
-            print(f"Restarting from {checkpoint_name}")
-            adapters_weights = load_file(checkpoint_name)
+    # Prepare training arguments
+    training_args = transformers.TrainingArguments(
+        per_device_train_batch_size=micro_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        max_steps=max_steps,
+        warmup_steps=warmup_steps,
+        num_train_epochs=num_epochs,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        bf16=bf16,
+        logging_steps=10,      
+        optim="adamw_torch", 
 
-            def load_trainable_params(model, state_dict):
-                model_dict = model.state_dict()
-                filtered_dict = {k: v for k, v in state_dict.items() if k in model_dict and model_dict[k].requires_grad}
-                model_dict.update(filtered_dict)
-                model.load_state_dict(model_dict, strict=False)
-                return model
+        eval_strategy="steps" if val_set_size > 0 else "no",
+        eval_steps=eval_step if val_set_size > 0 else None,
+        save_strategy="steps",
+        save_steps=save_step,
+        output_dir=output_dir,
+        save_total_limit=3,
+        
+        load_best_model_at_end=True if val_set_size > 0 else False,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        
+        remove_unused_columns=False,
+        dataloader_num_workers=num_workers,
+        group_by_length=False,
+        
+        report_to="wandb" if wandb_project else None,
+        run_name=wandb_run_name,
+    )
 
-            model = load_trainable_params(model, adapters_weights)
-            print(f"##### Successfully loaded trainable parameters from {checkpoint_name} #####")
-            print_trainable_parameters(model)
-        else:
-            print(f"##### Checkpoint {checkpoint_name} not found #####")
-    else:
-        print("##### Initializing parameters #####")
-        init_trainable_parameters(model)
-    
-    trainable_param_names = ['lora_A', 'lora_B', 'adapter_w1', 'adapter_w2', 'shared_routing_adapter_gate']
-    convert_trainable_parameters(model, trainable_param_names)
-
-    print_trainable_parameters(model)
-    #model.print_trainable_parameters()  # Be more transparent about the % of trainable params.
-
-    model.enable_input_require_grads()
-    model.train()
-    
-    if val_set_size > 0:
-        train_val = data["train"].train_test_split(
-            test_size=val_set_size, shuffle=True, seed=42
-        )
-        train_data = (
-            train_val["train"].shuffle(seed=42).map(generate_and_tokenize_prompt)
-        )
-        val_data = (
-            train_val["test"].shuffle(seed=42).map(generate_and_tokenize_prompt)
-        )
-    else:
-        train_data = data["train"].shuffle(seed=42).map(generate_and_tokenize_prompt)
-        val_data = None
-
-    if not ddp and torch.cuda.device_count() > 1:
-        # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
-        model.is_parallelizable = True
-        model.model_parallel = True
-    
+    # Initialize trainer
     trainer = transformers.Trainer(
         model=model,
-        train_dataset=train_data,
-        eval_dataset=val_data,
-        args=transformers.TrainingArguments(
-            per_device_train_batch_size=micro_batch_size,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            warmup_steps=100,
-            num_train_epochs=num_epochs,
-            learning_rate=learning_rate,
-            weight_decay=weight_decay,
-            bf16=True,
-            logging_steps=10,
-            optim="adamw_torch",
-            eval_strategy="steps" if val_set_size > 0 else "no",
-            save_strategy="steps",
-            eval_steps=eval_step if val_set_size > 0 else None,
-            save_steps=save_step,
-            output_dir=output_dir,
-            save_total_limit=3,
-            load_best_model_at_end=True if val_set_size > 0 else False,
-            ddp_find_unused_parameters=False if ddp else None,
-            group_by_length=group_by_length,
-            report_to="wandb" if use_wandb else None,
-            run_name=wandb_run_name if use_wandb else None,
-        ),
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
+        compute_metrics=compute_metrics,
     )
+    
     print(f"##### Trainer successfully initialized for {wandb_run_name} #####")
     model.config.use_cache = False
 
@@ -415,38 +263,54 @@ def train(
         print(f"##### Compiling for {wandb_run_name} #####")
         model = torch.compile(model)
         print(f"##### Compiling finished #####")
+    
+    trainer_output = trainer.train()
+    
+    # Save final model
+    model.save_pretrained(os.path.join(output_dir, "final_model"))
+    
+    return trainer_output
 
-    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-
-    model.save_pretrained(output_dir)
-
-    print(
-        "\n If there's a warning about missing keys above, please disregard :)"
+def main():
+    parser = argparse.ArgumentParser(description="Train DeepFFN model")
+    parser.add_argument("--model-dir", type=str, required=True,
+                      help="Directory containing the initialized model")
+    parser.add_argument("--dataset-name", type=str, default="Zyphra/Zyda-2",
+                      help="Dataset name")
+    parser.add_argument("--dataset-config", type=str, default="zyda_crossdeduped-filtered",
+                      help="Dataset configuration")
+    parser.add_argument("--output-dir", type=str, required=True, default="./output",
+                      help="Output directory")
+    parser.add_argument("--batch-size", type=int, default=16,
+                      help="Total batch size")
+    parser.add_argument("--micro-batch-size", type=int, default=16,
+                      help="Micro batch size")
+    parser.add_argument("--epochs", type=int, default=1,
+                      help="Number of epochs")
+    parser.add_argument("--lr", type=float, default=1e-4,
+                      help="Learning rate")
+    parser.add_argument("--wandb-project", type=str, default="deepffn",
+                      help="Weights & Biases project name")
+    parser.add_argument("--wandb-run", type=str, default=None,
+                      help="Weights & Biases run name")
+    parser.add_argument("--bf16", action="store_true",
+                      help="Use bfloat16 precision")
+    
+    args = parser.parse_args()
+    
+    train(
+        model_dir=args.model_dir,
+        dataset_name=args.dataset_name,
+        dataset_config=args.dataset_config,
+        output_dir=args.output_dir,
+        batch_size=args.batch_size,
+        micro_batch_size=args.micro_batch_size,
+        num_epochs=args.epochs,
+        learning_rate=args.lr,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run,
+        bf16=args.bf16
     )
 
-
-def generate_prompt(data_point):
-    # sorry about the formatting disaster gotta move fast
-    if data_point["input"]:
-        return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. 
-
-                ### Instruction:
-                {data_point["instruction"]}
-                
-                ### Input:
-                {data_point["input"]}
-                
-                ### Response:
-                {data_point["output"]}""" # noqa: E501
-    else:
-        return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.  
-
-                ### Instruction:
-                {data_point["instruction"]}
-                
-                ### Response:
-                {data_point["output"]}""" # noqa: E501
-
-
 if __name__ == "__main__":
-    fire.Fire(train)
+    main()
