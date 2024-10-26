@@ -49,7 +49,7 @@ AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 from utils import *
 
 
-def create_splits(dataset_name: str, dataset_config: str, cache_dir: str, val_size: int = 10000):
+def create_splits(dataset_name: str, dataset_config: str, cache_dir: str, val_size: int = 1000):
     """Create training and validation splits from streaming dataset."""
     print(f"Loading dataset {dataset_name}: {dataset_config}...")
     full_dataset = load_dataset(
@@ -89,7 +89,7 @@ def preprocess_function(examples, tokenizer, max_length: int = 1024):
         examples['text'],
         truncation=True,
         max_length=max_length,
-        padding=True,
+        padding=False,
         return_tensors=None
     )
     
@@ -108,19 +108,6 @@ def custom_data_collator(features):
         'labels': torch.stack([torch.tensor(f['labels']) for f in features])
     }
 
-def compute_metrics(eval_preds):
-    """Compute perplexity and other metrics."""
-    logits, labels = eval_preds
-    loss = torch.nn.functional.cross_entropy(
-        torch.tensor(logits).view(-1, logits.shape[-1]), 
-        torch.tensor(labels).view(-1)
-    )
-    perplexity = torch.exp(loss)
-    
-    return {
-        "perplexity": perplexity.item()
-    }
-
 
 def train(
     # Model/data params
@@ -133,13 +120,13 @@ def train(
     micro_batch_size: int = 16,
     num_epochs: int = 1,
     learning_rate: float = 1e-4,
-    weight_decay: float = 1e-4,
+    weight_decay: float = 0.0,
     warmup_steps: int = 100,
-    val_set_size: int = 10000,
+    val_set_size: int = 2000,
     use_gradient_checkpointing: bool = False,
-    eval_step: int = 200,
-    save_step: int = 200,
-    max_length: int = 4096,
+    eval_step: int = 80,
+    save_step: int = 80,
+    max_length: int = 2048,
     # Wandb params
     wandb_project: str = "deepffn",
     wandb_run_name: str = "test",
@@ -147,7 +134,37 @@ def train(
     seed: int = 42,
     bf16: bool = True,
     num_workers: int = 4,
+    resume_from_checkpoint: str = None, 
 ):
+    print(
+        f"Training model with params:\n"
+        f"=== Model/Data Parameters ===\n"
+        f"model_dir: {model_dir}\n"
+        f"dataset_name: {dataset_name}\n"
+        f"dataset_config: {dataset_config}\n"
+        f"output_dir: {output_dir}\n"
+        f"\n=== Training Hyperparameters ===\n"
+        f"batch_size: {batch_size}\n"
+        f"micro_batch_size: {micro_batch_size}\n"
+        f"num_epochs: {num_epochs}\n"
+        f"learning_rate: {learning_rate}\n"
+        f"weight_decay: {weight_decay}\n"
+        f"warmup_steps: {warmup_steps}\n"
+        f"val_set_size: {val_set_size}\n"
+        f"use_gradient_checkpointing: {use_gradient_checkpointing}\n"
+        f"eval_step: {eval_step}\n"
+        f"save_step: {save_step}\n"
+        f"max_length: {max_length}\n"
+        f"\n=== Weights & Biases Configuration ===\n"
+        f"wandb_project: {wandb_project}\n"
+        f"wandb_run_name: {wandb_run_name}\n"
+        f"\n=== Additional Parameters ===\n"
+        f"seed: {seed}\n"
+        f"bf16: {bf16}\n"
+        f"num_workers: {num_workers}\n"
+        f"resume_from_checkpoint: {resume_from_checkpoint}\n"
+    )
+
     # Load model and tokenizer
     config = DeepFFNLlamaConfig.from_pretrained(model_dir)
     model = DeepFFNLlamaForCausalLM.from_pretrained(
@@ -161,6 +178,25 @@ def train(
     tokenizer.pad_token = tokenizer.eos_token
 
     print(f"### Model successfully loaded at {model_dir} ###")
+
+    
+    # Handle checkpoint resuming
+    if resume_from_checkpoint:
+        resume_from_checkpoint = os.path.join(output_dir, resume_from_checkpoint)
+        print(f"##### Attempting to resume from checkpoint: {resume_from_checkpoint} #####")
+        
+        # Check for HF checkpoint directory
+        if os.path.isdir(resume_from_checkpoint):
+            print(f"Loading checkpoint from directory: {resume_from_checkpoint}")
+            model = DeepFFNLlamaForCausalLM.from_pretrained(
+                resume_from_checkpoint,
+                config=config,
+                torch_dtype=torch.bfloat16 if bf16 else torch.float32,
+                device_map='auto'
+            )
+            print(f"##### Successfully loaded checkpoint from {resume_from_checkpoint} #####")
+        else:
+            print(f"##### Checkpoint directory {resume_from_checkpoint} not found #####")
 
     # Prepare dataset
     cache_dir = f"./dataset/{dataset_config}"
@@ -178,9 +214,9 @@ def train(
     # For streaming datasets, we still need to specify max_steps
     # But now we have better information about the actual dataset size
     total_examples = 248e6  # Use actual count instead of estimate
-    max_steps = (total_examples * num_epochs) // examples_per_step
+    max_steps = int((total_examples * num_epochs) // examples_per_step)
     
-    print(f"Estimated total steps: {max_steps} (based on sample count)")
+    print(f"Estimated total steps: {max_steps}")
     print("==========================================\n")
 
 
@@ -207,7 +243,7 @@ def train(
         learning_rate=learning_rate,
         weight_decay=weight_decay,
         bf16=bf16,
-        logging_steps=10,      
+        logging_steps=2,      
         optim="adamw_torch", 
 
         eval_strategy="steps" if val_set_size > 0 else "no",
@@ -216,6 +252,9 @@ def train(
         save_steps=save_step,
         output_dir=output_dir,
         save_total_limit=3,
+        
+        resume_from_checkpoint=resume_from_checkpoint,  # Enable checkpoint resuming
+        ignore_data_skip=False,  
         
         load_best_model_at_end=True if val_set_size > 0 else False,
         metric_for_best_model="eval_loss",
@@ -237,8 +276,7 @@ def train(
         eval_dataset=val_dataset,
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-        ),
-        compute_metrics=compute_metrics,
+        )
     )
     
     print(f"##### Trainer successfully initialized for {wandb_run_name} #####")
@@ -276,7 +314,7 @@ def main():
                       help="Dataset configuration")
     parser.add_argument("--output-dir", type=str, required=True, default="./output",
                       help="Output directory")
-    parser.add_argument("--batch-size", type=int, default=16,
+    parser.add_argument("--batch-size", type=int, default=2048,
                       help="Total batch size")
     parser.add_argument("--micro-batch-size", type=int, default=16,
                       help="Micro batch size")
@@ -290,6 +328,8 @@ def main():
                       help="Weights & Biases run name")
     parser.add_argument("--bf16", action="store_true",
                       help="Use bfloat16 precision")
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None,
+                      help="Resume from checkpoint")
     
     args = parser.parse_args()
     
@@ -304,7 +344,8 @@ def main():
         learning_rate=args.lr,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run,
-        bf16=args.bf16
+        bf16=args.bf16,
+        resume_from_checkpoint=args.resume_from_checkpoint
     )
 
 if __name__ == "__main__":
