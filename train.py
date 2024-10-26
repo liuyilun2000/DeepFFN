@@ -124,8 +124,8 @@ def train(
     warmup_steps: int = 100,
     val_set_size: int = 2000,
     use_gradient_checkpointing: bool = False,
-    eval_step: int = 80,
-    save_step: int = 80,
+    eval_step: int = 20,
+    save_step: int = 20,
     max_length: int = 2048,
     # Wandb params
     wandb_project: str = "deepffn",
@@ -252,8 +252,8 @@ def train(
         save_steps=save_step,
         output_dir=output_dir,
         save_total_limit=3,
-        
-        resume_from_checkpoint=resume_from_checkpoint,  # Enable checkpoint resuming
+
+        #resume_from_checkpoint=resume_from_checkpoint,  # Enable checkpoint resuming
         ignore_data_skip=False,  
         
         load_best_model_at_end=True if val_set_size > 0 else False,
@@ -297,7 +297,7 @@ def train(
         model = torch.compile(model)
         print(f"##### Compiling finished #####")
     
-    trainer_output = trainer.train()
+    trainer_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     
     # Save final model
     model.save_pretrained(os.path.join(output_dir, "final_model"))
@@ -316,7 +316,7 @@ def main():
                       help="Output directory")
     parser.add_argument("--batch-size", type=int, default=2048,
                       help="Total batch size")
-    parser.add_argument("--micro-batch-size", type=int, default=16,
+    parser.add_argument("--micro-batch-size", type=int, default=32,
                       help="Micro batch size")
     parser.add_argument("--epochs", type=int, default=1,
                       help="Number of epochs")

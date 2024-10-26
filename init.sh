@@ -42,6 +42,7 @@ mkdir -p ${BASE_DIR}
 
 # Configuration array
 # Format: "hidden_size layers attention_heads intermediate_ratio mlp_layers"
+'''
 configs=(
     "768 12 12 4 1"
     "768 12 12 2 2"
@@ -49,6 +50,12 @@ configs=(
     "1024 24 16 4 1"
     "1024 24 16 2 2"
     "1024 24 16 1 4"
+)
+'''
+configs=(
+    "768 6 12 4 2"
+    "768 4 12 4 3"
+    "768 3 12 4 4"
 )
 
 # Initialize all configurations
