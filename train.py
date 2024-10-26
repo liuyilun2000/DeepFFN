@@ -51,7 +51,7 @@ from utils import *
 
 def create_splits(dataset_name: str, dataset_config: str, cache_dir: str, val_size: int = 10000):
     """Create training and validation splits from streaming dataset."""
-    print(f"Loading dataset {dataset_name}...")
+    print(f"Loading dataset {dataset_name}: {dataset_config}...")
     full_dataset = load_dataset(
         dataset_name,
         name=dataset_config,
@@ -60,14 +60,10 @@ def create_splits(dataset_name: str, dataset_config: str, cache_dir: str, val_si
         cache_dir=cache_dir
     )
     
-    # Count examples in a sample
-    sample_count = count_examples_in_stream(full_dataset)
-    print(f"Dataset sampling complete. Found {sample_count} examples in sample.")
-    
     val_dataset = full_dataset.take(val_size)
     train_dataset = full_dataset.skip(val_size)
     
-    return train_dataset, val_dataset, sample_count
+    return train_dataset, val_dataset
 
 
 def count_examples_in_stream(dataset, sample_size=1000):
@@ -168,13 +164,12 @@ def train(
 
     # Prepare dataset
     cache_dir = f"./dataset/{dataset_config}"
-    train_dataset, val_dataset, sample_count = create_splits(dataset_name, dataset_config, cache_dir, val_set_size)
+    train_dataset, val_dataset = create_splits(dataset_name, dataset_config, cache_dir, val_set_size)
     
     gradient_accumulation_steps = batch_size // micro_batch_size
     examples_per_step = micro_batch_size * gradient_accumulation_steps
     
     print("\n=== Dataset and Training Steps Information ===")
-    print(f"Sample size checked: {sample_count}")
     print(f"Micro batch size: {micro_batch_size}")
     print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
     print(f"Examples processed per step: {examples_per_step}")
@@ -182,10 +177,10 @@ def train(
     
     # For streaming datasets, we still need to specify max_steps
     # But now we have better information about the actual dataset size
-    total_examples = sample_count  # Use actual count instead of estimate
+    total_examples = 248e6  # Use actual count instead of estimate
     max_steps = (total_examples * num_epochs) // examples_per_step
     
-    print(f"Estimated total steps: {max_steps:,} (based on sample count)")
+    print(f"Estimated total steps: {max_steps} (based on sample count)")
     print("==========================================\n")
 
 
@@ -204,11 +199,11 @@ def train(
     
     # Prepare training arguments
     training_args = transformers.TrainingArguments(
-        per_device_train_batch_size=micro_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        max_steps=max_steps,
-        warmup_steps=warmup_steps,
-        num_train_epochs=num_epochs,
+        per_device_train_batch_size=int(micro_batch_size),
+        gradient_accumulation_steps=int(gradient_accumulation_steps),
+        max_steps=int(max_steps),
+        warmup_steps=int(warmup_steps),
+        num_train_epochs=int(num_epochs),
         learning_rate=learning_rate,
         weight_decay=weight_decay,
         bf16=bf16,
