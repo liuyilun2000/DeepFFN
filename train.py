@@ -1,6 +1,3 @@
-HF_TOKEN = "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"
-
-
 import argparse
 import copy
 import json
@@ -57,7 +54,6 @@ def create_splits(dataset_name: str, dataset_config: str, cache_dir: str, val_si
         name=dataset_config,
         split="train",
         streaming=True,
-        cache_dir=cache_dir
     )
     
     val_dataset = full_dataset.take(val_size)
