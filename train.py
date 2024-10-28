@@ -1,8 +1,10 @@
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import argparse
 import copy
 import json
 import math
-import os
 import re
 import sys
 from os.path import join
@@ -85,7 +87,7 @@ def train(
     num_epochs: int = 1,
     learning_rate: float = 1e-4,
     weight_decay: float = 0.0,
-    warmup_steps: int = 100,
+    warmup_steps: int = 20,
     #val_set_size: int = 2000,
     use_gradient_checkpointing: bool = False,
     eval_step: int = 20,
@@ -275,15 +277,15 @@ def main():
     parser = argparse.ArgumentParser(description="Train DeepFFN model")
     parser.add_argument("--model-dir", type=str, required=True,
                       help="Directory containing the initialized model")
-    parser.add_argument("--dataset-name", type=str, default="Zyphra/Zyda-2",
+    parser.add_argument("--dataset-name", type=str, default="roneneldan/TinyStories",
                       help="Dataset name")
-    parser.add_argument("--dataset-config", type=str, default="zyda_crossdeduped-filtered",
-                      help="Dataset configuration")
+    #parser.add_argument("--dataset-config", type=str, default="zyda_crossdeduped-filtered",
+    #                  help="Dataset configuration")
     parser.add_argument("--output-dir", type=str, required=True, default="./output",
                       help="Output directory")
-    parser.add_argument("--batch-size", type=int, default=2048,
+    parser.add_argument("--batch-size", type=int, default=1048,
                       help="Total batch size")
-    parser.add_argument("--micro-batch-size", type=int, default=32,
+    parser.add_argument("--micro-batch-size", type=int, default=64,
                       help="Micro batch size")
     parser.add_argument("--epochs", type=int, default=1,
                       help="Number of epochs")
@@ -303,7 +305,7 @@ def main():
     train(
         model_dir=args.model_dir,
         dataset_name=args.dataset_name,
-        dataset_config=args.dataset_config,
+        #dataset_config=args.dataset_config,
         output_dir=args.output_dir,
         batch_size=args.batch_size,
         micro_batch_size=args.micro_batch_size,
