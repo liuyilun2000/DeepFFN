@@ -46,41 +46,11 @@ AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 from utils import *
 
 
-def create_splits(dataset_name: str, dataset_config: str, cache_dir: str, val_size: int = 1000):
-    """Create training and validation splits from streaming dataset."""
-    print(f"Loading dataset {dataset_name}: {dataset_config}...")
-    full_dataset = load_dataset(
-        dataset_name,
-        name=dataset_config,
-        split="train",
-        streaming=True,
-    )
-    
-    val_dataset = full_dataset.take(val_size)
-    train_dataset = full_dataset.skip(val_size)
-    
-    return train_dataset, val_dataset
-
-
-def count_examples_in_stream(dataset, sample_size=1000):
-    """
-    Estimate total examples in a streaming dataset by sampling.
-    Returns both a sample count and estimated total.
-    """
-    print("Sampling dataset to estimate size...")
-    # Take a small sample and count time
-    sample = dataset.take(sample_size)
-    sample_count = 0
-    for _ in tqdm(sample, total=sample_size):
-        sample_count += 1
-    
-    print(f"Found {sample_count} examples in sample")
-    return sample_count
-
-
-
 def preprocess_function(examples, tokenizer, max_length: int = 1024):
     """Tokenize and prepare the examples."""
+    texts = []
+    for text in examples['text']:
+        texts.append(text + tokenizer.eos_token)
     outputs = tokenizer(
         examples['text'],
         truncation=True,
@@ -88,7 +58,6 @@ def preprocess_function(examples, tokenizer, max_length: int = 1024):
         padding=False,
         return_tensors=None
     )
-    
     return {
         'input_ids': outputs['input_ids'],
         'attention_mask': outputs['attention_mask'],
@@ -108,8 +77,7 @@ def custom_data_collator(features):
 def train(
     # Model/data params
     model_dir: str,
-    dataset_name: str = "Zyphra/Zyda-2",
-    dataset_config: str = "zyda_crossdeduped-filtered",
+    dataset_name: str = "roneneldan/TinyStories",
     output_dir: str = "./output",
     # Training hyperparams
     batch_size: int = 16,
@@ -118,11 +86,11 @@ def train(
     learning_rate: float = 1e-4,
     weight_decay: float = 0.0,
     warmup_steps: int = 100,
-    val_set_size: int = 2000,
+    #val_set_size: int = 2000,
     use_gradient_checkpointing: bool = False,
     eval_step: int = 20,
     save_step: int = 20,
-    max_length: int = 2048,
+    max_length: int = 1024,
     # Wandb params
     wandb_project: str = "deepffn",
     wandb_run_name: str = "test",
@@ -137,7 +105,6 @@ def train(
         f"=== Model/Data Parameters ===\n"
         f"model_dir: {model_dir}\n"
         f"dataset_name: {dataset_name}\n"
-        f"dataset_config: {dataset_config}\n"
         f"output_dir: {output_dir}\n"
         f"\n=== Training Hyperparameters ===\n"
         f"batch_size: {batch_size}\n"
@@ -146,7 +113,7 @@ def train(
         f"learning_rate: {learning_rate}\n"
         f"weight_decay: {weight_decay}\n"
         f"warmup_steps: {warmup_steps}\n"
-        f"val_set_size: {val_set_size}\n"
+        #f"val_set_size: {val_set_size}\n"
         f"use_gradient_checkpointing: {use_gradient_checkpointing}\n"
         f"eval_step: {eval_step}\n"
         f"save_step: {save_step}\n"
@@ -195,26 +162,30 @@ def train(
             print(f"##### Checkpoint directory {resume_from_checkpoint} not found #####")
 
     # Prepare dataset
-    cache_dir = f"./dataset/{dataset_config}"
-    train_dataset, val_dataset = create_splits(dataset_name, dataset_config, cache_dir, val_set_size)
+    
+    train_dataset = load_dataset(
+        dataset_name,
+        split="train"
+    )
+    val_dataset = load_dataset(
+        dataset_name,
+        split="validation"
+    )
     
     gradient_accumulation_steps = batch_size // micro_batch_size
     examples_per_step = micro_batch_size * gradient_accumulation_steps
+    
+    train_set_size = len(train_dataset) 
+    val_set_size = len(val_dataset)
+    max_steps = int((train_set_size * num_epochs) // examples_per_step)
     
     print("\n=== Dataset and Training Steps Information ===")
     print(f"Micro batch size: {micro_batch_size}")
     print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
     print(f"Examples processed per step: {examples_per_step}")
     print(f"Validation set size: {val_set_size}")
-    
-    # For streaming datasets, we still need to specify max_steps
-    # But now we have better information about the actual dataset size
-    total_examples = 248e6  # Use actual count instead of estimate
-    max_steps = int((total_examples * num_epochs) // examples_per_step)
-    
     print(f"Estimated total steps: {max_steps}")
     print("==========================================\n")
-
 
     # Preprocess datasets
     train_dataset = train_dataset.map(
