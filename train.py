@@ -10,9 +10,8 @@ import sys
 from os.path import join
 from pathlib import Path
 from typing import List, Optional, Union
+from multiprocessing import cpu_count
 
-import fire
-import requests
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -20,11 +19,7 @@ import torch.nn.functional as F
 from torch.nn import Sequential
 
 from tqdm import tqdm
-
-from safetensors import safe_open
-from safetensors.torch import load_file, save_file
-
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 
 import transformers
 from transformers import (
@@ -45,27 +40,86 @@ AutoConfig.register("deepffn-llama", DeepFFNLlamaConfig)
 AutoModel.register(DeepFFNLlamaConfig, DeepFFNLlamaModel)
 AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 
-from utils import *
+def create_splits(dataset_name: str, cache_dir: str, val_size: int = 10000):
+    print(f"Loading dataset {dataset_name}...")
+    
+    splits_cache_dir = os.path.join(cache_dir, "splits")
+    train_cache_path = os.path.join(splits_cache_dir, "train")
+    val_cache_path = os.path.join(splits_cache_dir, "validation")
 
+    if os.path.exists(train_cache_path) and os.path.exists(val_cache_path):
+        print("Loading splits from cache...")
+        try:
+            train_dataset = Dataset.load_from_disk(train_cache_path)
+            val_dataset = Dataset.load_from_disk(val_cache_path)
+            print(f"Loaded cached splits - Training: {len(train_dataset)}, Validation: {len(val_dataset)}")
+            return train_dataset, val_dataset
+        except Exception as e:
+            print(f"Failed to load cached splits: {e}")
+            print("Falling back to creating new splits...")
 
-def preprocess_function(examples, tokenizer, max_length: int = 1024):
-    """Tokenize and prepare the examples."""
-    texts = []
-    for text in examples['text']:
-        texts.append(text + tokenizer.eos_token)
-    outputs = tokenizer(
-        examples['text'],
-        truncation=True,
-        max_length=max_length,
-        padding=False,
-        return_tensors=None
+    print(f"Creating new validation split with {val_size} examples...")
+    
+    full_dataset = load_dataset(
+        dataset_name,
+        split="train",
+        streaming=False,
+        cache_dir=cache_dir
     )
-    return {
-        'input_ids': outputs['input_ids'],
-        'attention_mask': outputs['attention_mask'],
-        'labels': outputs['input_ids'].copy(),
-    }
+    
+    full_dataset = full_dataset.shuffle(seed=42)
+    splits = full_dataset.train_test_split(
+        test_size=val_size,
+        shuffle=False
+    )
+    
+    train_dataset = splits['train']
+    val_dataset = splits['test']
 
+    print("Saving splits to cache...")
+    os.makedirs(splits_cache_dir, exist_ok=True)
+    train_dataset.save_to_disk(train_cache_path)
+    val_dataset.save_to_disk(val_cache_path)
+    
+    print(f"Created splits - Training: {len(train_dataset)}, Validation: {len(val_dataset)}")
+    return train_dataset, val_dataset
+
+def preprocess_and_cache_dataset(
+    dataset: Dataset,
+    cache_dir: str,
+    split_name: str,
+    preprocess_fn,
+    num_proc: int = None,
+    force_reprocess: bool = False
+):
+    """Preprocess dataset with multiprocessing and caching support."""
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"processed_{split_name}")
+    
+    if not force_reprocess and os.path.exists(cache_path):
+        print(f"Loading preprocessed {split_name} dataset from cache...")
+        try:
+            return Dataset.load_from_disk(cache_path)
+        except Exception as e:
+            print(f"Failed to load cache: {e}")
+            print("Falling back to preprocessing...")
+    
+    if num_proc is None:
+        num_proc = max(1, int(cpu_count()))
+    
+    print(f"Preprocessing {split_name} dataset using {num_proc} processes...")
+    processed_dataset = dataset.map(
+        preprocess_fn,
+        batched=True,
+        remove_columns=dataset.column_names,
+        num_proc=num_proc,
+        desc=f"Preprocessing {split_name} split"
+    )
+    
+    print(f"Saving preprocessed {split_name} dataset to cache...")
+    processed_dataset.save_to_disk(cache_path)
+    
+    return processed_dataset
 
 def custom_data_collator(features):
     """Collate examples into batches."""
@@ -75,23 +129,23 @@ def custom_data_collator(features):
         'labels': torch.stack([torch.tensor(f['labels']) for f in features])
     }
 
-
 def train(
     # Model/data params
     model_dir: str,
-    dataset_name: str = "roneneldan/TinyStories",
+    dataset_name: str = "openwebtext",
     output_dir: str = "./output",
+    dataset_cache_dir: str = "./dataset/Skylion007",
+    preprocessing_cache_dir: str = "./mapped_datasets",
     # Training hyperparams
-    batch_size: int = 16,
-    micro_batch_size: int = 16,
+    per_device_batch_size: int = 16,
+    gradient_accumulation_steps: int = 4,
     num_epochs: int = 1,
-    learning_rate: float = 1e-4,
-    weight_decay: float = 0.0,
+    learning_rate: float = 1e-3,
+    weight_decay: float = 0.01,
     warmup_steps: int = 20,
-    #val_set_size: int = 2000,
-    use_gradient_checkpointing: bool = False,
-    eval_step: int = 20,
-    save_step: int = 20,
+    val_size: int = 10000,
+    eval_steps: int = 500,
+    save_steps: int = 500,
     max_length: int = 1024,
     # Wandb params
     wandb_project: str = "deepffn",
@@ -99,137 +153,112 @@ def train(
     # Additional params
     seed: int = 42,
     bf16: bool = True,
-    num_workers: int = 4,
+    num_workers: int = 16,
     resume_from_checkpoint: str = None, 
 ):
-    print(
-        f"Training model with params:\n"
-        f"=== Model/Data Parameters ===\n"
-        f"model_dir: {model_dir}\n"
-        f"dataset_name: {dataset_name}\n"
-        f"output_dir: {output_dir}\n"
-        f"\n=== Training Hyperparameters ===\n"
-        f"batch_size: {batch_size}\n"
-        f"micro_batch_size: {micro_batch_size}\n"
-        f"num_epochs: {num_epochs}\n"
-        f"learning_rate: {learning_rate}\n"
-        f"weight_decay: {weight_decay}\n"
-        f"warmup_steps: {warmup_steps}\n"
-        #f"val_set_size: {val_set_size}\n"
-        f"use_gradient_checkpointing: {use_gradient_checkpointing}\n"
-        f"eval_step: {eval_step}\n"
-        f"save_step: {save_step}\n"
-        f"max_length: {max_length}\n"
-        f"\n=== Weights & Biases Configuration ===\n"
-        f"wandb_project: {wandb_project}\n"
-        f"wandb_run_name: {wandb_run_name}\n"
-        f"\n=== Additional Parameters ===\n"
-        f"seed: {seed}\n"
-        f"bf16: {bf16}\n"
-        f"num_workers: {num_workers}\n"
-        f"resume_from_checkpoint: {resume_from_checkpoint}\n"
-    )
-
     # Load model and tokenizer
     config = DeepFFNLlamaConfig.from_pretrained(model_dir)
     model = DeepFFNLlamaForCausalLM.from_pretrained(
         model_dir,
         config=config,
         torch_dtype=torch.bfloat16 if bf16 else torch.float32,
-        device_map='auto'
+        device_map='cuda'
     )
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"### Model successfully loaded at {model_dir} ###")
-
-    
     # Handle checkpoint resuming
     if resume_from_checkpoint:
-        resume_from_checkpoint = os.path.join(output_dir, resume_from_checkpoint)
-        print(f"##### Attempting to resume from checkpoint: {resume_from_checkpoint} #####")
-        
-        # Check for HF checkpoint directory
-        if os.path.isdir(resume_from_checkpoint):
-            print(f"Loading checkpoint from directory: {resume_from_checkpoint}")
+        checkpoint_path = os.path.join(output_dir, resume_from_checkpoint)
+        if os.path.isdir(checkpoint_path):
+            print(f"Loading checkpoint from directory: {checkpoint_path}")
             model = DeepFFNLlamaForCausalLM.from_pretrained(
-                resume_from_checkpoint,
+                checkpoint_path,
                 config=config,
                 torch_dtype=torch.bfloat16 if bf16 else torch.float32,
-                device_map='auto'
+                device_map='cuda'
             )
-            print(f"##### Successfully loaded checkpoint from {resume_from_checkpoint} #####")
-        else:
-            print(f"##### Checkpoint directory {resume_from_checkpoint} not found #####")
 
-    # Prepare dataset
-    
-    train_dataset = load_dataset(
-        dataset_name,
-        split="train"
-    )
-    val_dataset = load_dataset(
-        dataset_name,
-        split="validation"
+    # Prepare dataset splits
+    dataset_cache = os.path.join(dataset_cache_dir, dataset_name)
+    train_dataset, val_dataset = create_splits(
+        dataset_name=dataset_name,
+        cache_dir=dataset_cache,
+        val_size=val_size
     )
     
-    gradient_accumulation_steps = batch_size // micro_batch_size
-    examples_per_step = micro_batch_size * gradient_accumulation_steps
+    # Preprocess datasets with caching
+    preprocessing_cache = os.path.join(preprocessing_cache_dir, dataset_name)
     
-    train_set_size = len(train_dataset) 
-    val_set_size = len(val_dataset)
-    max_steps = int((train_set_size * num_epochs) // examples_per_step)
+    def preprocess_function(examples):
+        outputs = tokenizer(
+            examples['text'],
+            truncation=True,
+            max_length=max_length,
+            padding=True,
+            return_tensors=None
+        )
+        return {
+            'input_ids': outputs['input_ids'],
+            'attention_mask': outputs['attention_mask'],
+            'labels': outputs['input_ids'].copy(),
+        }
+    
+    train_dataset = preprocess_and_cache_dataset(
+        dataset=train_dataset,
+        cache_dir=preprocessing_cache,
+        split_name="train",
+        preprocess_fn=preprocess_function,
+        num_proc=num_workers
+    )
+
+    val_dataset = preprocess_and_cache_dataset(
+        dataset=val_dataset,
+        cache_dir=preprocessing_cache,
+        split_name="val",
+        preprocess_fn=preprocess_function,
+        num_proc=num_workers
+    )
+    
+    total_examples = len(train_dataset)
+    examples_per_step = per_device_batch_size * gradient_accumulation_steps
+    max_steps = int((total_examples * num_epochs) // examples_per_step)
     
     print("\n=== Dataset and Training Steps Information ===")
-    print(f"Micro batch size: {micro_batch_size}")
-    print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
-    print(f"Examples processed per step: {examples_per_step}")
-    print(f"Validation set size: {val_set_size}")
-    print(f"Estimated total steps: {max_steps}")
+    print(f"Total training examples: {total_examples}")
+    print(f"Examples per step: {examples_per_step}")
+    print(f"Validation set size: {val_size}")
+    print(f"Max steps: {max_steps}")
     print("==========================================\n")
 
-    # Preprocess datasets
-    train_dataset = train_dataset.map(
-        lambda x: preprocess_function(x, tokenizer, max_length),
-        batched=True,
-        remove_columns=train_dataset.column_names
-    )
-
-    val_dataset = val_dataset.map(
-        lambda x: preprocess_function(x, tokenizer, max_length),
-        batched=True,
-        remove_columns=val_dataset.column_names
-    )
-    
     # Prepare training arguments
     training_args = transformers.TrainingArguments(
-        per_device_train_batch_size=int(micro_batch_size),
-        gradient_accumulation_steps=int(gradient_accumulation_steps),
-        max_steps=int(max_steps),
-        warmup_steps=int(warmup_steps),
-        num_train_epochs=int(num_epochs),
+        output_dir=output_dir,
+        max_steps=max_steps,
+        per_device_train_batch_size=per_device_batch_size,
+        per_device_eval_batch_size=per_device_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        
         learning_rate=learning_rate,
         weight_decay=weight_decay,
-        bf16=bf16,
-        logging_steps=2,      
-        optim="adamw_torch", 
-
-        eval_strategy="steps" if val_set_size > 0 else "no",
-        eval_steps=eval_step if val_set_size > 0 else None,
-        save_strategy="steps",
-        save_steps=save_step,
-        output_dir=output_dir,
-        save_total_limit=3,
-
-        #resume_from_checkpoint=resume_from_checkpoint,  # Enable checkpoint resuming
-        ignore_data_skip=False,  
+        warmup_steps=warmup_steps,
         
-        load_best_model_at_end=True if val_set_size > 0 else False,
+        logging_dir=os.path.join(output_dir, "logs"),
+        logging_steps=10,
+        
+        eval_steps=eval_steps,
+        evaluation_strategy="steps",
+        save_steps=save_steps,
+        save_strategy="steps",
+        save_total_limit=2,
+        
+        load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         
         remove_unused_columns=False,
+        bf16=bf16,
         dataloader_num_workers=num_workers,
         group_by_length=False,
         
@@ -237,38 +266,20 @@ def train(
         run_name=wandb_run_name,
     )
 
-    # Initialize trainer
     trainer = transformers.Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        data_collator=transformers.DataCollatorForSeq2Seq(
-            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-        )
+        data_collator=custom_data_collator,
     )
     
-    print(f"##### Trainer successfully initialized for {wandb_run_name} #####")
     model.config.use_cache = False
 
-    old_state_dict = model.state_dict
-
-    model.state_dict = (
-        lambda self, *_, **__: {
-            name: param.data
-            for name, param in self.named_parameters()
-            if param.requires_grad
-        }
-    ).__get__(model, type(model))
-
     if torch.__version__ >= "2" and sys.platform != "win32":
-        print(f"##### Compiling for {wandb_run_name} #####")
         model = torch.compile(model)
-        print(f"##### Compiling finished #####")
     
     trainer_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-    
-    # Save final model
     model.save_pretrained(os.path.join(output_dir, "final_model"))
     
     return trainer_output
@@ -299,16 +310,17 @@ def main():
                       help="Use bfloat16 precision")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None,
                       help="Resume from checkpoint")
-    
+    parser.add_argument("--per-device-batch-size", type=int, default=40,
+                      help="Per device batch size")
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4,
+                      help="Number of gradient accumulation steps")
     args = parser.parse_args()
     
     train(
         model_dir=args.model_dir,
-        dataset_name=args.dataset_name,
-        #dataset_config=args.dataset_config,
         output_dir=args.output_dir,
-        batch_size=args.batch_size,
-        micro_batch_size=args.micro_batch_size,
+        per_device_batch_size=args.per_device_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_epochs=args.epochs,
         learning_rate=args.lr,
         wandb_project=args.wandb_project,
