@@ -42,6 +42,9 @@ AutoConfig.register("deepffn-roberta", DeepFFNRoBERTaConfig)
 AutoModel.register(DeepFFNRoBERTaConfig, DeepFFNRobertaModel)
 AutoModelForSequenceClassification.register(DeepFFNRoBERTaConfig, DeepFFNRobertaForSequenceClassification)
 
+# os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+# os.environ['TORCH_USE_CUDA_DSA'] = "1"
+
 def create_splits(dataset_name: str, cache_dir: str, val_size: int = 80000):
     print(f"Loading dataset {dataset_name}...")
     
@@ -160,6 +163,9 @@ def train(
 ):
     # Load model and tokenizer
     config = DeepFFNRoBERTaConfig.from_pretrained(model_dir)
+    print(f"Model config: vocab_size={config.vocab_size}, "
+          f"hidden_size={config.hidden_size}, "
+          f"max_position_embeddings={config.max_position_embeddings}")
     model = DeepFFNRobertaForMaskedLM.from_pretrained(
         model_dir,
         config=config,
@@ -169,6 +175,8 @@ def train(
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = 'right'
+    tokenizer.truncation_side = 'right'
 
     # Handle checkpoint resuming
     if resume_from_checkpoint:
@@ -275,7 +283,7 @@ def train(
         eval_dataset=val_dataset,
         data_collator=custom_data_collator,
     )
-    
+
     model.config.use_cache = False
 
     if torch.__version__ >= "2" and sys.platform != "win32":
@@ -312,7 +320,7 @@ def main():
                       help="Use bfloat16 precision")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None,
                       help="Resume from checkpoint")
-    parser.add_argument("--per-device-batch-size", type=int, default=128,
+    parser.add_argument("--per-device-batch-size", type=int, default=40,
                       help="Per device batch size")
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4,
                       help="Number of gradient accumulation steps")

@@ -86,9 +86,9 @@ class RobertaEmbeddings(nn.Module):
 
         # End copy
         self.padding_idx = config.pad_token_id
-        self.position_embeddings = nn.Embedding(
-            config.max_position_embeddings, config.hidden_size, padding_idx=self.padding_idx
-        )
+        # self.position_embeddings = nn.Embedding(
+        #     config.max_position_embeddings, config.hidden_size, padding_idx=self.padding_idx
+        # )
 
     def forward(
         self, input_ids=None, token_type_ids=None, position_ids=None, inputs_embeds=None, past_key_values_length=0
@@ -97,6 +97,10 @@ class RobertaEmbeddings(nn.Module):
             if input_ids is not None:
                 # Create the position ids from the input token ids. Any padded tokens remain padded.
                 position_ids = create_position_ids_from_input_ids(input_ids, self.padding_idx, past_key_values_length)
+                print(f"Position IDs min: {position_ids.min()}, max: {position_ids.max()}, shape: {position_ids.shape}")
+                
+                # Add safety clamp
+                position_ids = torch.clamp(position_ids, 0, self.position_embeddings.num_embeddings - 1)
             else:
                 position_ids = self.create_position_ids_from_inputs_embeds(inputs_embeds)
 
