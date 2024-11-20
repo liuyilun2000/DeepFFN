@@ -157,6 +157,7 @@ def train(
     resume_from_checkpoint: str = None, 
 ):
     # Load model and tokenizer
+    print(torch.cuda.mem_get_info())
     config = DeepFFNLlamaConfig.from_pretrained(model_dir)
     model = DeepFFNLlamaForCausalLM.from_pretrained(
         model_dir,
@@ -310,7 +311,7 @@ def main():
                       help="Use bfloat16 precision")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None,
                       help="Resume from checkpoint")
-    parser.add_argument("--per-device-batch-size", type=int, default=40,
+    parser.add_argument("--per-device-batch-size", type=int, default=16,
                       help="Per device batch size")
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4,
                       help="Number of gradient accumulation steps")
