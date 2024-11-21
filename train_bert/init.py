@@ -14,6 +14,7 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
     AutoModelForSequenceClassification,
+    RobertaTokenizerFast,
 )
 
 from DeepFFNRoBERTa.configuration_roberta import DeepFFNRoBERTaConfig
@@ -47,14 +48,16 @@ def initialize_model(
     output_path.mkdir(parents=True, exist_ok=True)
     
     # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
+    tokenizer = RobertaTokenizerFast.from_pretrained(
         base_model,
         trust_remote_code=True,
-        token=hf_token
+        token=hf_token,
+        max_len=512,
     )
     
     # Create model configuration
     config = DeepFFNRoBERTaConfig(
+        max_position_embedding = 514,
         hidden_size=hidden_size,
         intermediate_size=int(hidden_size * intermediate_size_ratio),
         num_hidden_layers=num_hidden_layers,

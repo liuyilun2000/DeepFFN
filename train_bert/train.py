@@ -2,6 +2,7 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import argparse
+import numpy as np
 import copy
 import json
 import math
@@ -29,6 +30,8 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
     AutoModelForSequenceClassification,
+    DataCollatorForLanguageModeling,
+    RobertaTokenizerFast
 )
 
 from DeepFFNRoBERTa.configuration_roberta import DeepFFNRoBERTaConfig
@@ -42,8 +45,8 @@ AutoConfig.register("deepffn-roberta", DeepFFNRoBERTaConfig)
 AutoModel.register(DeepFFNRoBERTaConfig, DeepFFNRobertaModel)
 AutoModelForSequenceClassification.register(DeepFFNRoBERTaConfig, DeepFFNRobertaForSequenceClassification)
 
-# os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-# os.environ['TORCH_USE_CUDA_DSA'] = "1"
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+os.environ['TORCH_USE_CUDA_DSA'] = "1"
 
 def create_splits(dataset_name: str, cache_dir: str, val_size: int = 80000):
     print(f"Loading dataset {dataset_name}...")
@@ -126,14 +129,6 @@ def preprocess_and_cache_dataset(
     
     return processed_dataset
 
-def custom_data_collator(features):
-    """Collate examples into batches."""
-    return {
-        'input_ids': torch.stack([torch.tensor(f['input_ids']) for f in features]),
-        'attention_mask': torch.stack([torch.tensor(f['attention_mask']) for f in features]),
-        'labels': torch.stack([torch.tensor(f['labels']) for f in features])
-    }
-
 def train(
     # Model/data params
     model_dir: str,
@@ -148,7 +143,7 @@ def train(
     learning_rate: float = 6e-4,
     weight_decay: float = 0.01,
     warmup_steps: int = 20,
-    val_size: int = 10000,
+    val_size: int = 80000,
     eval_steps: int = 500,
     save_steps: int = 500,
     max_length: int = 512,
@@ -173,7 +168,7 @@ def train(
         device_map='cuda'
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    tokenizer = RobertaTokenizerFast.from_pretrained(model_dir, do_lower_case=False)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = 'right'
     tokenizer.truncation_side = 'right'
@@ -201,20 +196,37 @@ def train(
     # Preprocess datasets with caching
     preprocessing_cache = os.path.join(preprocessing_cache_dir, dataset_name)
     
+    # def preprocess_function(examples):
+    #     return tokenizer.encode_plus(
+    #         examples['text'],
+    #         truncation=True,
+    #         max_length=max_length,
+    #         padding=True,
+    #         return_special_tokens_mask=True
+    #     )
+
     def preprocess_function(examples):
-        outputs = tokenizer(
-            examples['text'],
+        encodings = [tokenizer.encode_plus(
+            text,
             truncation=True,
             max_length=max_length,
-            padding=True,
-            return_tensors=None
-        )
+            padding=True, 
+            return_special_tokens_mask=True
+        ) for text in examples['text']]
+        
         return {
-            'input_ids': outputs['input_ids'],
-            'attention_mask': outputs['attention_mask'],
-            'labels': outputs['input_ids'].copy(),
+            'input_ids': [e['input_ids'] for e in encodings],
+            'attention_mask': [e['attention_mask'] for e in encodings],
+            'special_tokens_mask': [e['special_tokens_mask'] for e in encodings]
         }
-    
+
+    # Use masked lm collator
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=True,
+        mlm_probability=0.15
+    )
+        
     train_dataset = preprocess_and_cache_dataset(
         dataset=train_dataset,
         cache_dir=preprocessing_cache,
@@ -274,6 +286,7 @@ def train(
         
         report_to="wandb" if wandb_project else None,
         run_name=wandb_run_name,
+        save_safetensors=False
     )
 
     trainer = transformers.Trainer(
@@ -281,7 +294,7 @@ def train(
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        data_collator=custom_data_collator,
+        data_collator=data_collator,
     )
 
     model.config.use_cache = False

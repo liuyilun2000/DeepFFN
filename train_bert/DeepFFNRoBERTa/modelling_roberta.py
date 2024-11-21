@@ -97,10 +97,10 @@ class RobertaEmbeddings(nn.Module):
             if input_ids is not None:
                 # Create the position ids from the input token ids. Any padded tokens remain padded.
                 position_ids = create_position_ids_from_input_ids(input_ids, self.padding_idx, past_key_values_length)
-                print(f"Position IDs min: {position_ids.min()}, max: {position_ids.max()}, shape: {position_ids.shape}")
+                # print(f"Position IDs min: {position_ids.min()}, max: {position_ids.max()}, shape: {position_ids.shape}")
                 
                 # Add safety clamp
-                position_ids = torch.clamp(position_ids, 0, self.position_embeddings.num_embeddings - 1)
+                # position_ids = torch.clamp(position_ids, 0, self.position_embeddings.num_embeddings - 1)
             else:
                 position_ids = self.create_position_ids_from_inputs_embeds(inputs_embeds)
 
