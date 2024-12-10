@@ -34,15 +34,15 @@ from transformers import (
     AutoTokenizer,
 )
 
-from mixtral_modification.configuration_mixtral import MixtralAdapterConfig
-from mixtral_modification.modeling_mixtral import (
-    MixtralAdapterForCausalLM,
-    MixtralAdapterModel,
+from DeepFFNLLaMA.configuration_llama import DeepFFNLlamaConfig
+from DeepFFNLLaMA.modeling_llama import (
+    DeepFFNLlamaModel,
+    DeepFFNLlamaForCausalLM
 )
 
-AutoConfig.register("mixtral-adapter", MixtralAdapterConfig)
-AutoModel.register(MixtralAdapterConfig, MixtralAdapterModel)
-AutoModelForCausalLM.register(MixtralAdapterConfig, MixtralAdapterForCausalLM)
+AutoConfig.register("deepffn-llama", DeepFFNLlamaConfig)
+AutoModel.register(DeepFFNLlamaConfig, DeepFFNLlamaModel)
+AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 
 
 import peft
