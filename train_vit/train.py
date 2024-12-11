@@ -43,6 +43,7 @@ class KaggleImageNetDataset(Dataset):
         else:
             data_dir = self.root_dir / "ILSVRC/Data/CLS-LOC/val"
             self.samples.extend(list(data_dir.glob("*.JPEG")))
+            self.samples = self.samples[0:25000]
         
         if split == "train":
             self.transforms = transforms.Compose([
@@ -56,7 +57,7 @@ class KaggleImageNetDataset(Dataset):
             ])
         else:
             self.transforms = transforms.Compose([
-                transforms.Resize(256),
+                # transforms.Resize(256),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
                 transforms.Normalize(
@@ -136,23 +137,23 @@ def create_dataloaders(
     return train_loader, val_loader
 
 
-def compute_metrics(pred):
-    """Compute metrics for masked image modeling."""
-    # pred.predictions is the reconstructed image
-    # pred.label_ids are the original images
-    # pred.inputs['bool_masked_pos'] contains the mask
+# def compute_metrics(pred):
+#     """Compute metrics for masked image modeling."""
+#     # pred.predictions is the reconstructed image
+#     # pred.label_ids are the original images
+#     # pred.inputs['bool_masked_pos'] contains the mask
 
-    loss = pred.predictions[0]  # This is the loss returned by the model
-    reconstructed_pixels = pred.predictions[1]  # This is the reconstruction
+#     loss = pred.predictions[0]  # This is the loss returned by the model
+#     # reconstructed_pixels = pred.predictions[1]  # This is the reconstruction
     
-    return {
-        "mim_loss": loss.mean().item(),  # Overall masked image modeling loss
-        "reconstruction_loss": torch.nn.functional.l1_loss(
-            pred.label_ids,
-            reconstructed_pixels,
-            reduction="mean"
-        ).item()  # L1 loss between original and reconstructed pixels
-    }
+#     return {
+#         "mim_loss": loss.mean().item(),  # Overall masked image modeling loss
+#         # "reconstruction_loss": torch.nn.functional.l1_loss(
+#         #     pred.label_ids,
+#         #     reconstructed_pixels,
+#         #     reduction="mean"
+#         # ).item()  # L1 loss between original and reconstructed pixels
+#     }
 
 def get_device(bf16: bool = False):
     if torch.cuda.is_available():
@@ -169,14 +170,13 @@ def train(
     model_dir: str,
     data_dir: str,
     output_dir: str,
-    per_device_batch_size: int = 32,
-    eval_batch_size: int = 8,
+    per_device_batch_size: int = 256,
+    eval_batch_size: int = 256,
     gradient_accumulation_steps: int = 4,
-    num_epochs: int = 15,
+    num_epochs: int = 30,
     learning_rate: float = 1e-3,
     weight_decay: float = 0.05,
     warmup_steps: int = 1000,  # Reduced for shorter training
-    max_eval_steps: int = 100,
     wandb_project: str = "deepffn-vit",
     wandb_name: str = None,
     seed: int = 42,
@@ -208,7 +208,6 @@ def train(
                 "epochs": num_epochs,
                 "warmup_steps": warmup_steps,
                 "weight_decay": weight_decay,
-                "max_eval_steps": max_eval_steps,
             }
         )
 
@@ -234,9 +233,6 @@ def train(
         torch_dtype=torch.bfloat16 if bf16 else torch.float32,
     )
     model = model.to(device)
-
-    # if torch.cuda.is_available():
-    #     model = model.cuda()
     
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(
@@ -261,13 +257,13 @@ def train(
         logging_dir=f"{output_dir}/logs",
         logging_steps=10,
         save_strategy="steps",
-        save_steps=1000,
+        save_steps=100,
         evaluation_strategy="steps",
-        eval_steps=200,
+        eval_steps=100,
         prediction_loss_only=True,
         load_best_model_at_end=True,
-        metric_for_best_model="reconstruction_loss",
-        greater_is_better=False,  # Lower reconstruction loss is better
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         save_total_limit=2,
         remove_unused_columns=False,
         report_to="wandb" if wandb_project else "none",
@@ -284,7 +280,7 @@ def train(
         args=training_args,
         train_dataset=train_loader.dataset,
         eval_dataset=val_loader.dataset,
-        compute_metrics=compute_metrics,
+        # compute_metrics=compute_metrics,
     )
     
     # Start training
