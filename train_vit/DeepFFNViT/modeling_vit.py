@@ -394,19 +394,20 @@ VIT_ATTENTION_CLASSES = {
 
 class DeepFFNViTLayer(nn.Module):
     """This corresponds to the Block class in the timm implementation."""
-
     def __init__(self, config: DeepFFNViTConfig) -> None:
         super().__init__()
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
         self.attention = VIT_ATTENTION_CLASSES[config._attn_implementation](config)
-        # self.intermediate = ViTIntermediate(config)
-        ### DeepFFN ###
-        self.intermediate = nn.ModuleList(
-            [ViTIntermediate(config, mlp_layer_idx) for mlp_layer_idx in range(config.num_mlp_layers)]
-        )
-
-        self.output = ViTOutput(config)
+        
+        # Create pairs of intermediate and output layers
+        self.intermediates = nn.ModuleList([
+            ViTIntermediate(config) for _ in range(config.num_mlp_layers)
+        ])
+        self.outputs = nn.ModuleList([
+            ViTOutput(config) for _ in range(config.num_mlp_layers)
+        ])
+        
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
@@ -417,26 +418,79 @@ class DeepFFNViTLayer(nn.Module):
         output_attentions: bool = False,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
         self_attention_outputs = self.attention(
-            self.layernorm_before(hidden_states),  # in ViT, layernorm is applied before self-attention
+            self.layernorm_before(hidden_states),
             head_mask,
             output_attentions=output_attentions,
         )
         attention_output = self_attention_outputs[0]
-        outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
+        outputs = self_attention_outputs[1:]
 
-        # first residual connection
+        # First residual connection
         hidden_states = attention_output + hidden_states
 
-        # in ViT, layernorm is also applied after self-attention
+        # Start FFN block with layernorm
         layer_output = self.layernorm_after(hidden_states)
-        layer_output = self.intermediate(layer_output)
-
-        # second residual connection is done here
-        layer_output = self.output(layer_output, hidden_states)
+        
+        # Process through stacked FFN layers
+        for intermediate, output in zip(self.intermediates, self.outputs):
+            intermediate_output = intermediate(layer_output)
+            layer_output = output(intermediate_output, hidden_states)
+            # Update hidden_states for next layer's residual
+            hidden_states = layer_output
 
         outputs = (layer_output,) + outputs
-
         return outputs
+
+# class DeepFFNViTLayer(nn.Module):
+#     """This corresponds to the Block class in the timm implementation, modified for DeepFFN."""
+
+#     def __init__(self, config: DeepFFNViTConfig) -> None:
+#         super().__init__()
+#         self.chunk_size_feed_forward = config.chunk_size_feed_forward
+#         self.seq_len_dim = 1
+#         self.attention = VIT_ATTENTION_CLASSES[config._attn_implementation](config)
+        
+#         # DeepFFN: Stack multiple FFN layers
+#         self.intermediate = nn.ModuleList(
+#             [ViTIntermediate(config) for _ in range(config.num_mlp_layers)]
+#         )
+#         # Single output layer
+#         self.output = ViTOutput(config)
+        
+#         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+#         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+
+#     def forward(
+#         self,
+#         hidden_states: torch.Tensor,
+#         head_mask: Optional[torch.Tensor] = None,
+#         output_attentions: bool = False,
+#     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
+#         # Self-attention block
+#         self_attention_outputs = self.attention(
+#             self.layernorm_before(hidden_states),
+#             head_mask,
+#             output_attentions=output_attentions,
+#         )
+#         attention_output = self_attention_outputs[0]
+#         outputs = self_attention_outputs[1:]
+
+#         # First residual connection after attention
+#         hidden_states = attention_output + hidden_states
+
+#         # Start FFN block with layernorm
+#         layer_output = self.layernorm_after(hidden_states)
+        
+#         # Process through stacked FFN layers
+#         intermediate_output = layer_output
+#         for intermediate_layer in self.intermediate:
+#             intermediate_output = intermediate_layer(intermediate_output)
+        
+#         # Single output projection and residual connection
+#         layer_output = self.output(intermediate_output, hidden_states)
+
+#         outputs = (layer_output,) + outputs
+#         return outputs
 
 
 class DeepFFNViTEncoder(nn.Module):
@@ -692,11 +746,11 @@ class ViTPooler(nn.Module):
     """,
     VIT_START_DOCSTRING,
 )
-class ViTForMaskedImageModeling(ViTPreTrainedModel):
+class DeepFFNViTForMaskedImageModeling(ViTPreTrainedModel):
     def __init__(self, config: DeepFFNViTConfig) -> None:
         super().__init__(config)
 
-        self.vit = ViTModel(config, add_pooling_layer=False, use_mask_token=True)
+        self.vit = DeepFFNViTModel(config,   add_pooling_layer=False, use_mask_token=True)
 
         self.decoder = nn.Sequential(
             nn.Conv2d(
