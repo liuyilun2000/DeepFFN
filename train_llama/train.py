@@ -134,7 +134,7 @@ def train(
     model_dir: str,
     dataset_name: str = "openwebtext",
     output_dir: str = "./output",
-    dataset_cache_dir: str = "./dataset/Skylion007",
+    #dataset_cache_dir: str = "./dataset/Skylion007",
     preprocessing_cache_dir: str = "./mapped_datasets",
     # Training hyperparams
     per_device_batch_size: int = 16,
@@ -144,8 +144,8 @@ def train(
     weight_decay: float = 0.01,
     warmup_steps: int = 20,
     val_size: int = 10000,
-    eval_steps: int = 500,
-    save_steps: int = 500,
+    eval_steps: int = 40,
+    save_steps: int = 40,
     max_length: int = 1024,
     # Wandb params
     wandb_project: str = "deepffn",
@@ -153,7 +153,7 @@ def train(
     # Additional params
     seed: int = 42,
     bf16: bool = True,
-    num_workers: int = 16,
+    num_workers: int = 32,
     resume_from_checkpoint: str = None, 
 ):
     # Load model and tokenizer
@@ -182,13 +182,22 @@ def train(
             )
 
     # Prepare dataset splits
+    dataset = load_dataset("openwebtext", num_proc=num_workers)
+    split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)
+    print(split_dataset)
+    split_dataset['val'] = split_dataset.pop('test') 
+    
+    train_dataset = split_dataset["train"]
+    val_dataset = split_dataset["val"]
+    '''
     dataset_cache = os.path.join(dataset_cache_dir, dataset_name)
     train_dataset, val_dataset = create_splits(
-        dataset_name=dataset_name,
-        cache_dir=dataset_cache,
+        #dataset_name=dataset_name,
+        #cache_dir=dataset_cache,
+        dataset,
         val_size=val_size
     )
-    
+    '''    
     # Preprocess datasets with caching
     preprocessing_cache = os.path.join(preprocessing_cache_dir, dataset_name)
     
@@ -246,10 +255,10 @@ def train(
         warmup_steps=warmup_steps,
         
         logging_dir=os.path.join(output_dir, "logs"),
-        logging_steps=10,
+        logging_steps=2,
         
         eval_steps=eval_steps,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         save_steps=save_steps,
         save_strategy="steps",
         save_total_limit=2,
@@ -295,10 +304,6 @@ def main():
     #                  help="Dataset configuration")
     parser.add_argument("--output-dir", type=str, required=True, default="./output",
                       help="Output directory")
-    parser.add_argument("--batch-size", type=int, default=1048,
-                      help="Total batch size")
-    parser.add_argument("--micro-batch-size", type=int, default=64,
-                      help="Micro batch size")
     parser.add_argument("--epochs", type=int, default=1,
                       help="Number of epochs")
     parser.add_argument("--lr", type=float, default=1e-4,
@@ -311,9 +316,9 @@ def main():
                       help="Use bfloat16 precision")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None,
                       help="Resume from checkpoint")
-    parser.add_argument("--per-device-batch-size", type=int, default=16,
+    parser.add_argument("--per_device_batch_size", type=int, default=16,
                       help="Per device batch size")
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=4,
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
                       help="Number of gradient accumulation steps")
     args = parser.parse_args()
     

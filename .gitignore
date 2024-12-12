@@ -165,3 +165,8 @@ cython_debug/
 *.safetensors
 checkpoint-*/
 wandb/
+checkpoints/
+log/
+output/
+experiment/
+mapped_datasets/
