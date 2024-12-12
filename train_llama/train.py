@@ -156,15 +156,36 @@ def train(
     num_workers: int = 32,
     resume_from_checkpoint: str = None, 
 ):
+    # Initialize DDP
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    
+    if local_rank != -1:
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+        torch.distributed.init_process_group(
+            backend="nccl",
+            init_method="env://"
+        )
     # Load model and tokenizer
-    print(torch.cuda.mem_get_info())
+    print(f"Rank {local_rank} / {world_size} : {torch.cuda.mem_get_info()}")
     config = DeepFFNLlamaConfig.from_pretrained(model_dir)
     model = DeepFFNLlamaForCausalLM.from_pretrained(
         model_dir,
         config=config,
         torch_dtype=torch.bfloat16 if bf16 else torch.float32,
-        device_map='cuda'
+        #device_map='cuda'
     )
+    model.config.use_cache = False
+    
+    if world_size > 1 and local_rank != -1:
+        model = model.to(device)
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False  # Important for performance
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     tokenizer.pad_token = tokenizer.eos_token
@@ -230,25 +251,37 @@ def train(
         preprocess_fn=preprocess_function,
         num_proc=num_workers
     )
-    
-    total_examples = len(train_dataset)
-    examples_per_step = per_device_batch_size * gradient_accumulation_steps
-    max_steps = int((total_examples * num_epochs) // examples_per_step)
-    
-    print("\n=== Dataset and Training Steps Information ===")
-    print(f"Total training examples: {total_examples}")
-    print(f"Examples per step: {examples_per_step}")
-    print(f"Validation set size: {val_size}")
-    print(f"Max steps: {max_steps}")
-    print("==========================================\n")
 
+    # Calculate steps
+    total_examples = len(train_dataset)
+    examples_per_step = per_device_batch_size * gradient_accumulation_steps * world_size
+    max_steps = int((total_examples * num_epochs) // examples_per_step)
+
+    # Print training info only from main process
+    if local_rank <= 0:  # Main process
+        print(f"\n=== Training Configuration ===")
+        print(f"World size (num GPUs): {world_size}")
+        print(f"Per device batch size: {per_device_batch_size}")
+        print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+        print(f"Total batch size per step: {examples_per_step}")
+        print(f"Total examples: {total_examples}")
+        print(f"Number of epochs: {num_epochs}")
+        print(f"Max steps: {max_steps} | not used in trainer")
+        print("============================\n")
+    
     # Prepare training arguments
     training_args = transformers.TrainingArguments(
         output_dir=output_dir,
-        max_steps=max_steps,
+        #max_steps=max_steps,
+        num_train_epochs=num_epochs, 
         per_device_train_batch_size=per_device_batch_size,
         per_device_eval_batch_size=per_device_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
+        
+        # Add DDP-specific arguments
+        local_rank=local_rank,
+        ddp_backend="nccl",
+        dataloader_pin_memory=True,  # Important for performance
         
         learning_rate=learning_rate,
         weight_decay=weight_decay,
@@ -259,6 +292,7 @@ def train(
         
         eval_steps=eval_steps,
         eval_strategy="steps",
+        eval_on_start=True,
         save_steps=save_steps,
         save_strategy="steps",
         save_total_limit=2,
@@ -284,13 +318,13 @@ def train(
         data_collator=custom_data_collator,
     )
     
-    model.config.use_cache = False
 
     if torch.__version__ >= "2" and sys.platform != "win32":
         model = torch.compile(model)
     
     trainer_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-    model.save_pretrained(os.path.join(output_dir, "final_model"))
+    if local_rank <= 0:
+        model.save_pretrained(os.path.join(output_dir, "final_model"))
     
     return trainer_output
 
