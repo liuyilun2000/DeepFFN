@@ -26,3 +26,13 @@ python train.py \
   --micro-batch-size 32 \
   --wandb-project "dropped_llama" \
   --wandb-run "$WANDB_RUN" \
+
+torchrun \
+  --nproc_per_node 4 train.py \
+    --model-dir ./DeepFFNLLaMA/DeepFFNLLaMA_768_6_4-2 \
+    --output-dir ./output/768_6_4-2 \
+    --lr 5e-4  --bf16 \
+    --per_device_batch_size 32 \
+    --gradient_accumulation_steps 4 \
+    --wandb-project "deepffn" \
+    --wandb-run "768_6_4-2"
