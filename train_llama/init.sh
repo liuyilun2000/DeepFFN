@@ -1,7 +1,21 @@
 #!/bin/bash
 
-# HuggingFace token
-HF_TOKEN="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"
+# Check if .env file exists in home directory
+if [ ! -f "${HOME}/.env" ]; then
+    echo "Error: .env file not found in home directory"
+    echo "Please create ${HOME}/.env with your HuggingFace token like this:"
+    echo "HF_TOKEN=your_token_here"
+    exit 1
+fi
+
+# Load HF token from .env file in home directory
+source "${HOME}/.env"
+
+# Validate that token is set
+if [ -z "$HF_TOKEN" ]; then
+    echo "Error: HF_TOKEN not found in ${HOME}/.env file"
+    exit 1
+fi
 
 # Base directory for all models
 BASE_DIR="./DroppedLLaMA"
