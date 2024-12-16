@@ -3,6 +3,7 @@ base_model = "meta-llama/Llama-2-7B-hf"
 import argparse
 import os
 from pathlib import Path
+from git import List
 import torch
 from typing import Optional
 
@@ -15,25 +16,24 @@ from transformers import (
     AutoTokenizer,
 )
 
-from DeepFFNLLaMA.configuration_llama import DeepFFNLlamaConfig
-from DeepFFNLLaMA.modeling_llama import (
-    DeepFFNLlamaModel,
-    DeepFFNLlamaForCausalLM
+from DroppedLLaMA.configuration_llama import DroppedLlamaConfig
+from DroppedLLaMA.modeling_llama import (
+    DroppedLlamaModel,
+    DroppedLlamaForCausalLM
 )
 
-AutoConfig.register("deepffn-llama", DeepFFNLlamaConfig)
-AutoModel.register(DeepFFNLlamaConfig, DeepFFNLlamaModel)
-AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
+AutoConfig.register("dropped-llama", DroppedLlamaConfig)
+AutoModel.register(DroppedLlamaConfig, DroppedLlamaModel)
+AutoModelForCausalLM.register(DroppedLlamaConfig, DroppedLlamaForCausalLM)
 
 from utils import *
-
 
 def initialize_model(
     hidden_size: int,
     intermediate_size_ratio: float,
     num_hidden_layers: int,
     num_attention_heads: int,
-    num_mlp_layers: int,
+    attention_layers: List,
     output_dir: str,
     bf16: bool = True,
     hf_token: Optional[str] = None,
@@ -52,17 +52,17 @@ def initialize_model(
     )
     
     # Create model configuration
-    config = DeepFFNLlamaConfig(
+    config = DroppedLlamaConfig(
         hidden_size=hidden_size,
         intermediate_size=int(hidden_size * intermediate_size_ratio),
         num_hidden_layers=num_hidden_layers,
         num_attention_heads=num_attention_heads,
         num_key_value_heads=num_attention_heads,
-        num_mlp_layers=num_mlp_layers
+        attention_layers=attention_layers,
     )
     
     # Initialize model
-    model = DeepFFNLlamaForCausalLM(config)
+    model = DroppedLlamaForCausalLM(config)
 
     if bf16:
         model = model.to(torch.bfloat16)
@@ -87,7 +87,6 @@ def initialize_model(
     return model, tokenizer
 
 
-
 def main():
     parser = argparse.ArgumentParser(description="Initialize a DeepFFN-LLaMA model")
     parser.add_argument("--hidden-size", type=int, default=768,
@@ -98,8 +97,8 @@ def main():
                       help="Number of hidden layers")
     parser.add_argument("--num-attention-heads", type=int, default=12,
                       help="Number of attention heads")
-    parser.add_argument("--num-mlp-layers", type=int, default=1,
-                      help="Number of MLP layers")
+    parser.add_argument("--attention-layers", type=str, default="all",
+                  help="Comma-separated list of layer indices to keep attention modules (e.g., '0,1,4,7,10,11') or 'all' for all layers")
     parser.add_argument("--output-dir", type=str, required=True,
                       help="Directory to save the initialized model")
     parser.add_argument("--bf16", action="store_true", default=True,
@@ -111,12 +110,22 @@ def main():
     
     args = parser.parse_args()
     
+    if args.attention_layers.lower() == "all":
+            args.attention_layers = list(range(args.num_hidden_layers))
+    else:
+        try:
+            args.attention_layers = [int(x.strip()) for x in args.attention_layers.split(",")]
+            if not all(0 <= x < args.num_hidden_layers for x in args.attention_layers):
+                raise ValueError(f"All attention layer indices must be between 0 and {args.num_hidden_layers-1}")
+        except ValueError as e:
+            raise ValueError(f"Invalid attention layers format. Use comma-separated integers or 'all'. Error: {e}")
+
     initialize_model(
         hidden_size=args.hidden_size,
         intermediate_size_ratio=args.intermediate_size_ratio,
         num_hidden_layers=args.num_hidden_layers,
         num_attention_heads=args.num_attention_heads,
-        num_mlp_layers=args.num_mlp_layers,
+        attention_layers=args.attention_layers,
         output_dir=args.output_dir,
         bf16=args.bf16,
         hf_token=args.hf_token,
@@ -125,4 +134,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
