@@ -31,6 +31,8 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 from transformers.modeling_outputs import (
+    MoeCausalLMOutputWithPast,
+    MoeModelOutputWithPast,
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
     QuestionAnsweringModelOutput,
@@ -919,7 +921,7 @@ class DroppedLlamaModel(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-    ) -> Union[Tuple, BaseModelOutputWithPast]:
+    ) -> Union[Tuple, MoeModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1030,13 +1032,13 @@ class DroppedLlamaModel(LlamaPreTrainedModel):
 
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
-        output = BaseModelOutputWithPast(
+        return MoeModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
+            router_logits=all_attn_gate_values
         )
-        return (output, all_attn_gate_values) if self.has_attn_gate else output
 
     def _update_causal_mask(
         self,
@@ -1210,7 +1212,7 @@ class DroppedLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         num_logits_to_keep: int = 0,
         **loss_kwargs,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
+    ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
         r"""
         Args:
             labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1261,10 +1263,6 @@ class DroppedLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             return_dict=return_dict,
             cache_position=cache_position,
         )
-        ###
-        if self.has_attn_gate:
-            outputs, all_attn_gate_values = outputs
-        ###
 
         hidden_states = outputs[0]
         if self.config.pretraining_tp > 1:
@@ -1280,23 +1278,27 @@ class DroppedLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         
         if labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **loss_kwargs)
-        if all_attn_gate_values is not None:
-            gate_values = torch.stack(all_attn_gate_values, dim=1)  # [batch_size, num_layers, 1]
+        if self.has_attn_gate:
+            gate_values = torch.stack(outputs.router_logits if return_dict else outputs[-1], dim=1)  # [batch_size, num_layers, 1]
             gate_sum = gate_values.sum(dim=1) # [batch_size, 1]
             target = torch.tensor(self.attn_gate_target, device=gate_sum.device, dtype=gate_sum.dtype)
             # L2 loss on the difference between actual and target count
             aux_loss = (torch.relu(gate_sum - target)).pow(2).mean()
             if loss is not None:
-                loss += self.aux_loss_coef * aux_loss
+                loss += self.aux_loss_coef * aux_loss.to(loss.device)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
+            if self.has_attn_gate:
+                output = (aux_loss,) + output
             return (loss,) + output if loss is not None else output
 
-        return CausalLMOutputWithPast(
+        return MoeCausalLMOutputWithPast(
             loss=loss,
+            aux_loss=aux_loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            router_logits=outputs.router_logits,
         )

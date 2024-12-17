@@ -9,11 +9,14 @@ INTER_RATIO=4
 # ATTN_LAYERS="0_1_2_9_10_11"
 # ATTN_LAYERS="0_1_4_7_10_11"
 # ATTN_LAYERS="0_2_4_6_8_10"
-ATTN_LAYERS="0_1_2_4_7_9_10_11"
+# ATTN_LAYERS="0_1_2_4_7_9_10_11"
+ATTN_LAYERS="all"
 
-MODEL_NAME="DroppedLLaMA_${HIDDEN_SIZE}_${NUM_LAYERS}_${INTER_RATIO}-attn_${ATTN_LAYERS}"
-WANDB_RUN="llama-${HIDDEN_SIZE}-${NUM_LAYERS}-${INTER_RATIO}-attn${ATTN_LAYERS}"
-OUTPUT_DIR="./output/${HIDDEN_SIZE}_${NUM_LAYERS}_${INTER_RATIO}-attn${ATTN_LAYERS}"
+ATTN_GATE_TARGET=6
+
+MODEL_NAME="DroppedLLaMA_${HIDDEN_SIZE}_${NUM_LAYERS}_${INTER_RATIO}-attn_${ATTN_LAYERS}-gate_${ATTN_GATE_TARGET}"
+WANDB_RUN="DroppedLLaMA_${HIDDEN_SIZE}-${NUM_LAYERS}-${INTER_RATIO}-attn${ATTN_LAYERS}-gate_${ATTN_GATE_TARGET}"
+OUTPUT_DIR="./output/${HIDDEN_SIZE}_${NUM_LAYERS}_${INTER_RATIO}-attn${ATTN_LAYERS}-gate_${ATTN_GATE_TARGET}"
 
 echo "Starting training for model: $MODEL_NAME"
 echo "Output directory: $OUTPUT_DIR"
@@ -29,10 +32,10 @@ python train.py \
 
 torchrun \
   --nproc_per_node 4 train.py \
-    --model-dir ./DeepFFNLLaMA/DeepFFNLLaMA_768_6_4-2 \
-    --output-dir ./output/768_6_4-2 \
-    --lr 5e-4  --bf16 \
-    --per_device_batch_size 32 \
+    --model-dir "./DroppedLLaMA/$MODEL_NAME" \
+    --output-dir "$OUTPUT_DIR" \
+    --lr 1e-3  --bf16 \
+    --per_device_batch_size 16 \
     --gradient_accumulation_steps 4 \
-    --wandb-project "deepffn" \
-    --wandb-run "768_6_4-2"
+    --wandb-project "dropped_llama" \
+    --wandb-run "$WANDB_RUN" \

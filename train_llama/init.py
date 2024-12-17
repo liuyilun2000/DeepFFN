@@ -123,14 +123,14 @@ def main():
         raise ValueError(f"attention_gate_target ({args.attention_gate_target}) cannot be larger than "
                         f"num_hidden_layers ({args.num_hidden_layers})")
     
-    intermediate_size = args.hidden_size * args.intermediate_size_ratio
+    intermediate_size = int(args.hidden_size * args.intermediate_size_ratio)
     initialize_model(
         output_dir=args.output_dir,
         bf16=args.bf16,
         hf_token=args.hf_token,
         calc_non_emb_params=args.calc_non_emb_params,
         hidden_size=args.hidden_size,
-        intermediate_size=args.intermediate_size,
+        intermediate_size=intermediate_size,
         num_hidden_layers=args.num_hidden_layers,
         num_attention_heads=args.num_attention_heads,
         attention_gate=args.attention_gate,

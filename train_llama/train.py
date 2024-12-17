@@ -40,6 +40,21 @@ AutoConfig.register("deepffn-llama", DeepFFNLlamaConfig)
 AutoModel.register(DeepFFNLlamaConfig, DeepFFNLlamaModel)
 AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
 
+
+from DroppedLLaMA.configuration_llama import DroppedLlamaConfig
+from DroppedLLaMA.modeling_llama import (
+    DroppedLlamaModel,
+    DroppedLlamaForCausalLM
+)
+
+AutoConfig.register("dropped-llama", DroppedLlamaConfig)
+AutoModel.register(DroppedLlamaConfig, DroppedLlamaModel)
+AutoModelForCausalLM.register(DroppedLlamaConfig, DroppedLlamaForCausalLM)
+
+
+from utils import *
+
+
 def create_splits(dataset_name: str, cache_dir: str, val_size: int = 10000):
     print(f"Loading dataset {dataset_name}...")
     
@@ -169,8 +184,8 @@ def train(
         )
     # Load model and tokenizer
     print(f"Rank {local_rank} / {world_size} : {torch.cuda.mem_get_info()}")
-    config = DeepFFNLlamaConfig.from_pretrained(model_dir)
-    model = DeepFFNLlamaForCausalLM.from_pretrained(
+    config = DroppedLlamaConfig.from_pretrained(model_dir)
+    model = DroppedLlamaForCausalLM.from_pretrained(
         model_dir,
         config=config,
         torch_dtype=torch.bfloat16 if bf16 else torch.float32,
@@ -195,7 +210,7 @@ def train(
         checkpoint_path = os.path.join(output_dir, resume_from_checkpoint)
         if os.path.isdir(checkpoint_path):
             print(f"Loading checkpoint from directory: {checkpoint_path}")
-            model = DeepFFNLlamaForCausalLM.from_pretrained(
+            model = DroppedLlamaForCausalLM.from_pretrained(
                 checkpoint_path,
                 config=config,
                 torch_dtype=torch.bfloat16 if bf16 else torch.float32,

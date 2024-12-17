@@ -27,22 +27,36 @@ init_model() {
     local num_heads=$3
     local intermediate_ratio=$4
     local attention_layers=$5
+    local attention_gate=$6
+    local gate_target=$7    
     
-    # Construct output directory name (without heads in the name)
+    local model_suffix=""
+    if [ "$attention_gate" = "True" ]; then
+        model_suffix="-gate_${gate_target}"
+    fi
     local attn_pattern=$(echo $attention_layers | tr ',' '_')
-    local model_name="DroppedLLaMA_${hidden_size}_${num_layers}_${intermediate_ratio}-attn_${attn_pattern}"
+    local model_name="DroppedLLaMA_${hidden_size}_${num_layers}_${intermediate_ratio}-attn_${attn_pattern}${model_suffix}"
     local output_dir="${BASE_DIR}/${model_name}"
     
     echo "Initializing model: ${model_name}"
-    echo "Configuration: hidden_size=${hidden_size}, layers=${num_layers}, heads=${num_heads}, intermediate_ratio=${intermediate_ratio}, attention_layers=${attention_layers}"
+    echo "Configuration: hidden_size=${hidden_size}, layers=${num_layers}, heads=${num_heads}"
+    echo "intermediate_ratio=${intermediate_ratio}, attention_layers=${attention_layers}"
+    echo "attention_gate=${attention_gate}, gate_target=${gate_target}"
     echo "Output directory: ${output_dir}"
     
+    local gate_arg=""
+    if [ "$use_gate" = "True" ]; then
+        gate_arg="--attention-gate"
+    fi
+
     python init.py \
         --hidden-size ${hidden_size} \
         --intermediate-size-ratio ${intermediate_ratio} \
         --num-hidden-layers ${num_layers} \
         --num-attention-heads ${num_heads} \
         --attention-layers "${attention_layers}" \
+        ${gate_arg} \
+        --attention-gate-target ${gate_target} \
         --output-dir ${output_dir} \
         --bf16 \
         --hf-token ${HF_TOKEN} \
@@ -58,6 +72,7 @@ mkdir -p ${BASE_DIR}
 # Configuration array
 # Format: "hidden_size layers attention_heads intermediate_ratio attention_layers"
 
+'''
 configs=(
     "768 12 12 4 0,1,2,3,4,5,6,7,8,9,10,11"
     "768 12 12 4 0,1,4,7,10,11"
@@ -66,11 +81,17 @@ configs=(
     "768 12 12 4 0,1,2,4,7,9,10,11"
     "768 12 12 4 0,1,2,5,6,9,10,11"
 )
+'''
 
+configs=(
+    "768 12 12 4 all True 10"
+    "768 12 12 4 all True 8"
+    "768 12 12 4 all True 6"
+)
 # Initialize all configurations
 for config in "${configs[@]}"; do
-    read -r hidden_size layers heads intermediate_ratio attention_layers <<< "$config"
-    init_model "$hidden_size" "$layers" "$heads" "$intermediate_ratio" "$attention_layers"
+    read -r hidden_size layers heads intermediate_ratio attention_layers attention_gate gate_target <<< "$config"
+    init_model "$hidden_size" "$layers" "$heads" "$intermediate_ratio" "$attention_layers" "$attention_gate" "$gate_target"
 done
 
 echo "All models initialized successfully!"
