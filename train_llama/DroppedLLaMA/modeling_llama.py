@@ -623,6 +623,35 @@ LLAMA_ATTENTION_CLASSES = {
 }
 
 
+### Dropped Gate ###
+class DroppedGate(nn.Module):    
+    def __init__(self, config: DroppedLlamaConfig):
+        super().__init__()
+        self.gate = nn.Parameter(torch.ones(1) * 0.1)
+        self.act_fn = self.gumbel_sigmoid if config.attention_gate_act=="gumbel_sigmoid" else ACT2FN[config.attention_gate_act]
+        self.temperature = config.attention_gate_temperature
+    
+    def gumbel_sigmoid(self, x, hard=False):
+        tau = self.temperature
+        x = x / tau
+        # Gumbel-Softmax trick for binary case
+        gumbels = -torch.empty_like(x).exponential_().log()  # Sample Gumbel noise
+        gumbels_neg = -torch.empty_like(x).exponential_().log()
+        gumbels = (x + gumbels) / tau
+        gumbels_neg = (-x + gumbels_neg) / tau
+        x_soft = torch.sigmoid((gumbels - gumbels_neg) / 2)
+        
+        if hard:
+            # Straight through estimator
+            x_hard = (x_soft > 0.5).float()
+            x_soft = x_hard - x_soft.detach() + x_soft
+            
+        return x_soft
+    def forward(self, x):
+        gate_value = self.act_fn(self.gate * self.temperature)
+        return x * gate_value, gate_value
+###
+
 class DroppedLlamaDecoderLayer(nn.Module):
     def __init__(self, config: DroppedLlamaConfig, layer_idx: int):
         super().__init__()
@@ -630,24 +659,23 @@ class DroppedLlamaDecoderLayer(nn.Module):
         self.layer_idx = layer_idx
 
         ### DroppedLLAMA ###
-        self.has_attention = layer_idx in config.attention_layers
-        if self.has_attention:
+        self.has_attn_gate = config.attention_gate
+        if config.attention_layers:
+            self.has_attn = layer_idx in config.attention_layers
+        
+        # has_attn_gate will only function on layers with attn if drop pattern is provided in attention_layers
+        if self.has_attn:
+            self.pre_attn_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            if self.has_attn_gate:
+                self.attn_gate = DroppedGate(config)
             self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](
                 config=config, 
                 layer_idx=layer_idx
             )
-            self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        
-        # self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
-        # self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        
-        self.mlp = LlamaMLP(config, self.layer_idx)
-        
-        # self.mlp = nn.ModuleList(
-        #     [LlamaMLP(config, mlp_layer_idx) for mlp_layer_idx in range(config.num_mlp_layers)]
-        # )
-        
-        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        ######
+
+        self.pre_mlp_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp = LlamaMLP(config, self.layer_idx)        
 
     def forward(
         self,
@@ -686,8 +714,8 @@ class DroppedLlamaDecoderLayer(nn.Module):
         residual = hidden_states
 
         ### Dropped ###
-        if self.has_attention:
-            hidden_states = self.input_layernorm(hidden_states)
+        if self.has_attn:
+            hidden_states = self.pre_attn_layernorm(hidden_states)
             hidden_states, self_attn_weights, present_key_value = self.self_attn(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -697,10 +725,13 @@ class DroppedLlamaDecoderLayer(nn.Module):
                 use_cache=use_cache,
                 **kwargs,
             )
+            if self.has_attn_gate:
+                hidden_states, gate_value = self.attn_gate(hidden_states)
             hidden_states = residual + hidden_states
             residual = hidden_states
+        ######
 
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.pre_mlp_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -711,6 +742,11 @@ class DroppedLlamaDecoderLayer(nn.Module):
 
         if use_cache:
             outputs += (present_key_value,)
+        
+        ###
+        if self.has_attn_gate:
+            outputs += (gate_value,)
+        ###
 
         return outputs
 
@@ -859,8 +895,10 @@ class DroppedLlamaModel(LlamaPreTrainedModel):
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
+        self.has_attn_gate = config.attention_gate
+
         # Initialize weights and apply final processing
-        self.post_init()
+        self.post_init()        
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -934,6 +972,9 @@ class DroppedLlamaModel(LlamaPreTrainedModel):
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
+        ###
+        all_attn_gate_values = () if self.has_attn_gate else None
+        ###
         next_decoder_cache = None
 
         for decoder_layer in self.layers:
@@ -971,6 +1012,11 @@ class DroppedLlamaModel(LlamaPreTrainedModel):
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
+            
+            ###
+            if self.has_attn_gate:
+                all_attn_gate_values += (layer_outputs[-1],)
+            ###
 
         hidden_states = self.norm(hidden_states)
 
@@ -984,12 +1030,13 @@ class DroppedLlamaModel(LlamaPreTrainedModel):
 
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
-        return BaseModelOutputWithPast(
+        output = BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
         )
+        return (output, all_attn_gate_values) if self.has_attn_gate else output
 
     def _update_causal_mask(
         self,
@@ -1121,7 +1168,10 @@ class DroppedLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         self.model = DroppedLlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-
+        
+        self.has_attn_gate = config.attention_gate
+        self.attn_gate_target = config.attention_gate_target
+        self.aux_loss_coef = config.attention_gate_aux_loss_coef
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1197,6 +1247,7 @@ class DroppedLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        all_attn_gate_values = None
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -1210,6 +1261,10 @@ class DroppedLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             return_dict=return_dict,
             cache_position=cache_position,
         )
+        ###
+        if self.has_attn_gate:
+            outputs, all_attn_gate_values = outputs
+        ###
 
         hidden_states = outputs[0]
         if self.config.pretraining_tp > 1:
@@ -1221,8 +1276,18 @@ class DroppedLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
 
         loss = None
+        aux_loss = None
+        
         if labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **loss_kwargs)
+        if all_attn_gate_values is not None:
+            gate_values = torch.stack(all_attn_gate_values, dim=1)  # [batch_size, num_layers, 1]
+            gate_sum = gate_values.sum(dim=1) # [batch_size, 1]
+            target = torch.tensor(self.attn_gate_target, device=gate_sum.device, dtype=gate_sum.dtype)
+            # L2 loss on the difference between actual and target count
+            aux_loss = (torch.relu(gate_sum - target)).pow(2).mean()
+            if loss is not None:
+                loss += self.aux_loss_coef * aux_loss
 
         if not return_dict:
             output = (logits,) + outputs[1:]

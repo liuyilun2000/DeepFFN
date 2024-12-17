@@ -150,7 +150,14 @@ class DroppedLlamaConfig(PretrainedConfig):
         num_hidden_layers=32,
         num_attention_heads=32,
         num_key_value_heads=None,
+        ####
+        attention_gate=True,
+        attention_gate_act="gumbel_sigmoid",
+        attention_gate_temperature=1.0,
+        attention_gate_aux_loss_coef=0.01,
+        attention_gate_target=16,
         attention_layers=None,
+        ###
         hidden_act="silu",
         max_position_embeddings=2048,
         initializer_range=0.02,
@@ -182,6 +189,12 @@ class DroppedLlamaConfig(PretrainedConfig):
 
         self.num_key_value_heads = num_key_value_heads
 
+        ###
+        self.attention_gate = attention_gate
+        self.attention_gate_act = attention_gate_act
+        self.attention_gate_temperature = attention_gate_temperature
+        self.attention_gate_aux_loss_coef = attention_gate_aux_loss_coef
+        self.attention_gate_target = attention_gate_target
         self.attention_layers = (
             attention_layers if attention_layers is not None 
             else list(range(num_hidden_layers))
@@ -189,8 +202,9 @@ class DroppedLlamaConfig(PretrainedConfig):
 
         if not all(0 <= layer < num_hidden_layers for layer in self.attention_layers):
             raise ValueError(
-                f"All attention layers must be between 0 and {num_hidden_layers-1}"
+                f"All attention layers must be set between 0 and {num_hidden_layers-1}"
             )
+        ###
 
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
