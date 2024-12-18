@@ -21,15 +21,6 @@ OUTPUT_DIR="./output/${HIDDEN_SIZE}_${NUM_LAYERS}_${INTER_RATIO}-attn${ATTN_LAYE
 echo "Starting training for model: $MODEL_NAME"
 echo "Output directory: $OUTPUT_DIR"
 
-python train.py \
-  --model-dir "./DroppedLLaMA/$MODEL_NAME" \
-  --output-dir "$OUTPUT_DIR" \
-  --lr 6e-4 \
-  --bf16 \
-  --micro-batch-size 32 \
-  --wandb-project "dropped_llama" \
-  --wandb-run "$WANDB_RUN" \
-
 torchrun \
   --nproc_per_node 4 train.py \
     --model-dir "./DroppedLLaMA/$MODEL_NAME" \
@@ -39,3 +30,15 @@ torchrun \
     --gradient_accumulation_steps 4 \
     --wandb-project "dropped_llama" \
     --wandb-run "$WANDB_RUN" \
+
+
+
+
+python train.py \
+  --model-dir "./DroppedLLaMA/$MODEL_NAME" \
+  --output-dir "$OUTPUT_DIR" \
+  --lr 6e-4 \
+  --bf16 \
+  --micro-batch-size 32 \
+  --wandb-project "dropped_llama" \
+  --wandb-run "$WANDB_RUN" \
