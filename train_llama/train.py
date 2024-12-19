@@ -30,17 +30,6 @@ from transformers import (
     AutoTokenizer,
 )
 
-from DeepFFNLLaMA.configuration_llama import DeepFFNLlamaConfig
-from DeepFFNLLaMA.modeling_llama import (
-    DeepFFNLlamaModel,
-    DeepFFNLlamaForCausalLM
-)
-
-AutoConfig.register("deepffn-llama", DeepFFNLlamaConfig)
-AutoModel.register(DeepFFNLlamaConfig, DeepFFNLlamaModel)
-AutoModelForCausalLM.register(DeepFFNLlamaConfig, DeepFFNLlamaForCausalLM)
-
-
 from DroppedLLaMA.configuration_llama import DroppedLlamaConfig
 from DroppedLLaMA.modeling_llama import (
     DroppedLlamaModel,
@@ -150,7 +139,7 @@ def train(
     dataset_name: str = "openwebtext",
     output_dir: str = "./output",
     #dataset_cache_dir: str = "./dataset/Skylion007",
-    preprocessing_cache_dir: str = "./mapped_datasets",
+    preprocessing_cache_dir: str = "../mapped_datasets",
     # Training hyperparams
     per_device_batch_size: int = 16,
     gradient_accumulation_steps: int = 4,
@@ -159,11 +148,11 @@ def train(
     weight_decay: float = 0.01,
     warmup_steps: int = 20,
     val_size: int = 10000,
-    eval_steps: int = 40,
-    save_steps: int = 40,
+    eval_steps: int = 200,
+    save_steps: int = 200,
     max_length: int = 1024,
     # Wandb params
-    wandb_project: str = "deepffn",
+    wandb_project: str = "dropped-ffn",
     wandb_run_name: str = "test",
     # Additional params
     seed: int = 42,
@@ -303,7 +292,7 @@ def train(
         warmup_steps=warmup_steps,
         
         logging_dir=os.path.join(output_dir, "logs"),
-        logging_steps=2,
+        logging_steps=10,
         
         eval_steps=eval_steps,
         eval_strategy="steps",
@@ -339,12 +328,16 @@ def train(
     
     trainer_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     if local_rank <= 0:
-        model.save_pretrained(os.path.join(output_dir, "final_model"))
+        if hasattr(model, 'module'):
+            # If model is wrapped in DDP
+            model.module.save_pretrained(os.path.join(output_dir, "final_model"))
+        else:
+            model.save_pretrained(os.path.join(output_dir, "final_model"))
     
     return trainer_output
 
 def main():
-    parser = argparse.ArgumentParser(description="Train DeepFFN model")
+    parser = argparse.ArgumentParser(description="Train DroppedFFN model")
     parser.add_argument("--model-dir", type=str, required=True,
                       help="Directory containing the initialized model")
     parser.add_argument("--dataset-name", type=str, default="roneneldan/TinyStories",
@@ -355,9 +348,9 @@ def main():
                       help="Output directory")
     parser.add_argument("--epochs", type=int, default=1,
                       help="Number of epochs")
-    parser.add_argument("--lr", type=float, default=1e-4,
+    parser.add_argument("--lr", type=float, default=1e-3,
                       help="Learning rate")
-    parser.add_argument("--wandb-project", type=str, default="deepffn",
+    parser.add_argument("--wandb-project", type=str, default="dropped-ffn",
                       help="Weights & Biases project name")
     parser.add_argument("--wandb-run", type=str, default=None,
                       help="Weights & Biases run name")
