@@ -9,7 +9,7 @@ import re
 import sys
 from os.path import join
 from pathlib import Path
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union
 from multiprocessing import cpu_count
 
 import torch
@@ -23,7 +23,6 @@ from datasets import load_dataset, Dataset
 
 import transformers
 from transformers import (
-    Trainer,
     AutoConfig,
     AutoModel,
     AutoModelForCausalLM,
@@ -133,87 +132,6 @@ def custom_data_collator(features):
         'attention_mask': torch.stack([torch.tensor(f['attention_mask']) for f in features]),
         'labels': torch.stack([torch.tensor(f['labels']) for f in features])
     }
-
-
-class DroppedLlamaTrainer(Trainer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Store gate values for each step
-        self.gate_logs = []
-        self.log_save_steps = 100
-        # Create log directory if it doesn't exist
-        os.makedirs(self.args.output_dir, exist_ok=True)
-        self.log_file = os.path.join(self.args.output_dir, "gate_logs.jsonl")
-        
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        outputs = model(**inputs)        
-        # Get loss
-        loss = outputs.loss if isinstance(outputs, dict) else outputs[0]
-        aux_loss = outputs.aux_loss if hasattr(outputs, "aux_loss") else None
-        
-        # Log gate values and losses
-        log_stats = {
-            "step": self.state.global_step,
-            "main_loss": loss.item(),
-        }
-
-        if aux_loss is not None:
-            log_stats["aux_loss"] = aux_loss.item()
-            
-        if hasattr(outputs, "router_logits") and outputs.router_logits is not None:
-            # Stack gate values: [batch_size, num_layers, 1]
-            gate_values = torch.stack(outputs.router_logits, dim=1)
-            
-            # Add gate statistics to log_stats
-            log_stats.update({
-                "gate_mean": gate_values.mean().item(),
-                "gate_std": gate_values.std().item(),
-                "total_open_gates": gate_values.sum(dim=1).mean().item(),  # Average number of open gates
-            })
-            
-            # Log to tensorboard if available
-            if self.state.global_step % self.args.logging_steps == 0:
-                self.log({
-                    "loss/main": round(log_stats["main_loss"], 4),
-                    "loss/aux": round(log_stats["aux_loss"], 4) if aux_loss is not None else 0,
-                    "gate/mean": round(log_stats["gate_mean"], 4),
-                    "gate/std": round(log_stats["gate_std"], 4),
-                    "gate/total_open": round(log_stats["total_open_gates"], 4)
-                })
-            
-        self.gate_logs.append(log_stats)
-
-        # Write to file periodically
-        if self.state.global_step % self.log_save_steps == 0:
-            self._write_logs_to_file()
-
-        if return_outputs:
-            return loss, outputs
-        return loss
-    
-    def _write_logs_to_file(self):
-        """Write accumulated logs to file"""
-        if dist.is_initialized() and dist.get_rank() != 0:
-            return  # Only write logs from main process
-            
-        try:
-            # Write all new logs
-            with open(self.log_file, 'a') as f:
-                while self.gate_logs:
-                    log_entry = self.gate_logs.pop(0)  # Get and remove first entry
-                    f.write(json.dumps(log_entry) + '\n')
-                f.flush()  # Ensure it's written to disk
-        except Exception as e:
-            print(f"Warning: Failed to write logs to file: {e}")
-            # Keep the logs in memory if we couldn't write them
-            pass
-    
-    def save_gate_logs(self, output_dir: str):
-        """Final save of any remaining logs"""
-        self._write_logs_to_file()
-
-
-
 
 def train(
     # Model/data params
@@ -396,7 +314,7 @@ def train(
         run_name=wandb_run_name,
     )
 
-    trainer = DroppedLlamaTrainer(
+    trainer = transformers.Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -410,7 +328,11 @@ def train(
     
     trainer_output = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     if local_rank <= 0:
-        model.save_pretrained(os.path.join(output_dir, "final_model"))
+        if hasattr(model, 'module'):
+            # If model is wrapped in DDP
+            model.module.save_pretrained(os.path.join(output_dir, "final_model"))
+        else:
+            model.save_pretrained(os.path.join(output_dir, "final_model"))
     
     return trainer_output
 
