@@ -1,4 +1,5 @@
 base_model = "meta-llama/Llama-2-7B-hf"
+# base_model = "meta-llama/Llama-3.2-1B-Instruct"
 
 import argparse
 import os
@@ -29,11 +30,16 @@ AutoModelForCausalLM.register(DroppedLlamaConfig, DroppedLlamaForCausalLM)
 from utils import *
 
 def initialize_model(
+    vocab_size: int,
+    hidden_size: int,
+    intermediate_size_ratio: float,
+    num_hidden_layers: int,
+    num_attention_heads: int,
+    attention_layers: List,
     output_dir: str,
     bf16: bool = True,
     hf_token: Optional[str] = None,
-    calc_non_emb_params: bool = False,
-    **kwargs
+    calc_non_emb_params: bool = False
 ):
     """Initialize and save a new model with specified configuration."""
     # Create output directory
@@ -49,7 +55,13 @@ def initialize_model(
     
     # Create model configuration
     config = DroppedLlamaConfig(
-        **kwargs
+        vocab_size=vocab_size,
+        hidden_size=hidden_size,
+        intermediate_size=int(hidden_size * intermediate_size_ratio),
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=num_attention_heads,
+        num_key_value_heads=num_attention_heads,
+        attention_layers=attention_layers,
     )
     
     # Initialize model
@@ -61,7 +73,6 @@ def initialize_model(
     
     # Handle parameter conversion
     if calc_non_emb_params:
-        print(f"Non-embedding Parameters:")
         convert_trainable_parameters(
             model,
             frozen_param_names=['embed_tokens', 'lm_head', 'embed_in', 'embed_out']
@@ -81,6 +92,8 @@ def initialize_model(
 
 def main():
     parser = argparse.ArgumentParser(description="Initialize a DeepFFN-LLaMA model")
+    parser.add_argument("--vocab-size", type=int, default=32000,
+                      help="Vocabulary size of the tokenizer")
     parser.add_argument("--hidden-size", type=int, default=768,
                       help="Hidden size of the model")
     parser.add_argument("--intermediate-size-ratio", type=float, default=4.0,
@@ -89,14 +102,8 @@ def main():
                       help="Number of hidden layers")
     parser.add_argument("--num-attention-heads", type=int, default=12,
                       help="Number of attention heads")
-    ###
-    parser.add_argument("--attention-gate", action="store_true", default=True,
-                      help="Whether to use attention gating mechanism")
-    parser.add_argument("--attention-gate-target", type=int, default=6,
-                      help="Target number of attention layers to keep active")
     parser.add_argument("--attention-layers", type=str, default="all",
                   help="Comma-separated list of layer indices to keep attention modules (e.g., '0,1,4,7,10,11') or 'all' for all layers")
-    ###
     parser.add_argument("--output-dir", type=str, required=True,
                       help="Directory to save the initialized model")
     parser.add_argument("--bf16", action="store_true", default=True,
@@ -118,24 +125,17 @@ def main():
         except ValueError as e:
             raise ValueError(f"Invalid attention layers format. Use comma-separated integers or 'all'. Error: {e}")
 
-
-    if args.attention_gate_target > args.num_hidden_layers:
-        raise ValueError(f"attention_gate_target ({args.attention_gate_target}) cannot be larger than "
-                        f"num_hidden_layers ({args.num_hidden_layers})")
-    
-    intermediate_size = int(args.hidden_size * args.intermediate_size_ratio)
     initialize_model(
+        vocab_size=args.vocab_size,
+        hidden_size=args.hidden_size,
+        intermediate_size_ratio=args.intermediate_size_ratio,
+        num_hidden_layers=args.num_hidden_layers,
+        num_attention_heads=args.num_attention_heads,
+        attention_layers=args.attention_layers,
         output_dir=args.output_dir,
         bf16=args.bf16,
         hf_token=args.hf_token,
-        calc_non_emb_params=args.calc_non_emb_params,
-        hidden_size=args.hidden_size,
-        intermediate_size=intermediate_size,
-        num_hidden_layers=args.num_hidden_layers,
-        num_attention_heads=args.num_attention_heads,
-        attention_gate=args.attention_gate,
-        attention_gate_target=args.attention_gate_target,
-        attention_layers=args.attention_layers
+        calc_non_emb_params=args.calc_non_emb_params
     )
 
 if __name__ == "__main__":

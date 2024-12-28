@@ -1,34 +1,35 @@
 #!/bin/bash
 
 # Check if .env file exists in home directory
-if [ ! -f "${HOME}/.env" ]; then
-    echo "Error: .env file not found in home directory"
-    echo "Please create ${HOME}/.env with your HuggingFace token like this:"
-    echo "HF_TOKEN=your_token_here"
-    exit 1
-fi
+# if [ ! -f "${HOME}/.env" ]; then
+#     echo "Error: .env file not found in home directory"
+#     echo "Please create ${HOME}/.env with your HuggingFace token like this:"
+#     echo "HF_TOKEN=your_token_here"
+#     exit 1
+# fi
 
-# Load HF token from .env file in home directory
-source "${HOME}/.env"
+# # Load HF token from .env file in home directory
+# source "${HOME}/.env"
 
-# Validate that token is set
-if [ -z "$HF_TOKEN" ]; then
-    echo "Error: HF_TOKEN not found in ${HOME}/.env file"
-    exit 1
-fi
+# # Validate that token is set
+# if [ -z "$HF_TOKEN" ]; then
+#     echo "Error: HF_TOKEN not found in ${HOME}/.env file"
+#     exit 1
+# fi
 
 # Base directory for all models
 BASE_DIR="./DroppedLLaMA"
 
 # Function to initialize a model with given parameters
 init_model() {
-    local hidden_size=$1
-    local num_layers=$2
-    local num_heads=$3
-    local intermediate_ratio=$4
-    local attention_layers=$5
-    local attention_gate=$6
-    local gate_target=$7    
+    local vocab_size=$1
+    local hidden_size=$2
+    local num_layers=$3
+    local num_heads=$4
+    local intermediate_ratio=$5
+    local attention_layers=$6
+    local attention_gate=$7
+    local gate_target=$8    
     
     local model_suffix=""
     if [ "$attention_gate" = "True" ]; then
@@ -59,7 +60,7 @@ init_model() {
         --attention-gate-target ${gate_target} \
         --output-dir ${output_dir} \
         --bf16 \
-        --hf-token ${HF_TOKEN} \
+        # --hf-token ${HF_TOKEN} \
         --calc-non-emb-params
         
     echo "Model initialized for: ${model_name}"
@@ -72,26 +73,27 @@ mkdir -p ${BASE_DIR}
 # Configuration array
 # Format: "hidden_size layers attention_heads intermediate_ratio attention_layers"
 
-'''
-configs=(
-    "768 12 12 4 0,1,2,3,4,5,6,7,8,9,10,11"
-    "768 12 12 4 0,1,4,7,10,11"
-    "768 12 12 4 0,2,4,6,8,10"
-    "768 12 12 4 0,1,2,9,10,11"
-    "768 12 12 4 0,1,2,4,7,9,10,11"
-    "768 12 12 4 0,1,2,5,6,9,10,11"
-)
-'''
+# '''
+# configs=(
+#     "768 12 12 4 0,1,2,3,4,5,6,7,8,9,10,11"
+#     "768 12 12 4 0,1,4,7,10,11"
+#     "768 12 12 4 0,2,4,6,8,10"
+#     "768 12 12 4 0,1,2,9,10,11"
+#     "768 12 12 4 0,1,2,4,7,9,10,11"
+#     "768 12 12 4 0,1,2,5,6,9,10,11"
+# )
+# '''
 
 configs=(
-    "768 12 12 4 all True 10"
-    "768 12 12 4 all True 8"
-    "768 12 12 4 all True 6"
+    "32000 768 12 12 4 all True 10"
+    "32000 768 12 12 4 all True 8"
+    "32000 768 12 12 4 all True 6"
+    "32000 768 12 12 4 all True 4"
 )
 # Initialize all configurations
 for config in "${configs[@]}"; do
-    read -r hidden_size layers heads intermediate_ratio attention_layers attention_gate gate_target <<< "$config"
-    init_model "$hidden_size" "$layers" "$heads" "$intermediate_ratio" "$attention_layers" "$attention_gate" "$gate_target"
+    read -r vocab_size hidden_size layers heads intermediate_ratio attention_layers attention_gate gate_target <<< "$config"
+    init_model "$vocab_size" "$hidden_size" "$layers" "$heads" "$intermediate_ratio" "$attention_layers" "$attention_gate" "$gate_target"
 done
 
 echo "All models initialized successfully!"
